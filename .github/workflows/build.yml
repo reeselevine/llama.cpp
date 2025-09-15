@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - master
+      - debug
     paths: [
       '.github/workflows/build.yml',
       '.github/workflows/build-linux-cross.yml',
@@ -440,6 +441,10 @@ jobs:
           cd build
           # This is using llvmpipe and runs slower than other backends
           ctest -L main --verbose --timeout 3600
+
+      - name: Setup tmate session
+        if: ${{ failure() }}
+        uses: mxschmitt/action-tmate@v3
 
   ubuntu-22-cmake-hip:
     runs-on: ubuntu-22.04

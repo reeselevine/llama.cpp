@@ -342,7 +342,7 @@ static void ggml_backend_webgpu_debug(webgpu_context & ctx) {
     ctx->queue.Submit(1, &commands);
 
     ggml_backend_webgpu_map_buffer(ctx, ctx->debug_host_buf, wgpu::MapMode::Read, 0, ctx->debug_host_buf.GetSize());
-    const uint32_t * debug_data = (const uint32_t *) ctx->debug_host_buf.GetConstMappedRange();
+    const float * debug_data = (const float *) ctx->debug_host_buf.GetConstMappedRange();
     std::cout << "debug data:";
     for (size_t i = 0; i < WEBGPU_DEBUG_BUF_ELEMS; i++) {
         std::cout << "  " << i << ": " << debug_data[i];
@@ -589,7 +589,11 @@ static void ggml_webgpu_get_rows(webgpu_context & ctx, ggml_tensor * src, ggml_t
         { .binding = 2,
          .buffer  = ggml_webgpu_tensor_buf(dst),
          .offset  = ggml_webgpu_tensor_align_offset(ctx, dst),
-         .size    = ggml_webgpu_tensor_binding_size(ctx, dst) }
+         .size    = ggml_webgpu_tensor_binding_size(ctx, dst) },
+    //    { .binding = 3,
+    //     .buffer  = ctx->debug_dev_buf,
+    //     .offset  = 0,
+    //     .size    = ctx->debug_dev_buf.GetSize() }
     };
 
     size_t   max_wg_size = ctx->max_wg_size_x;
@@ -597,6 +601,7 @@ static void ggml_webgpu_get_rows(webgpu_context & ctx, ggml_tensor * src, ggml_t
 
     ggml_backend_webgpu_build_and_enqueue(ctx, ctx->get_rows_pipeline[src->type], params, entries, wg_x,
                                           ggml_op_name(dst->op));
+    //ggml_backend_webgpu_debug(ctx);
 }
 
 static void ggml_webgpu_mul_mat(webgpu_context & ctx, ggml_tensor * src0, ggml_tensor * src1, ggml_tensor * dst) {
@@ -1423,7 +1428,7 @@ static ggml_backend_dev_t ggml_backend_webgpu_reg_get_device(ggml_backend_reg_t 
     GGML_ASSERT(ctx->adapter != nullptr);
 
     ctx->adapter.GetLimits(&ctx->limits);
-    ctx->max_wg_size_x = 256;  // default value
+    ctx->max_wg_size_x = 512;  // default value
 
     wgpu::AdapterInfo info{};
     ctx->adapter.GetInfo(&info);

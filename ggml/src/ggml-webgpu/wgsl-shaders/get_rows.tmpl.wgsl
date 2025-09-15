@@ -761,6 +761,9 @@ var<storage, read_write> idx: array<i32>;
 @group(0) @binding(2)
 var<storage, read_write> dst: array<f32>;
 
+//@group(0) @binding(3)
+//var<storage, read_write> debug: array<f32>;
+
 struct Params {
     offset_src: u32, // in elements
     offset_idx: u32, // in elements
@@ -796,6 +799,7 @@ var<uniform> params: Params;
 override wg_size: u32;
 @compute @workgroup_size(wg_size)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    //debug[0] = 42.0f;
     if (gid.x >= params.n_rows * params.ne2 * params.ne3) {
         return;
     }
