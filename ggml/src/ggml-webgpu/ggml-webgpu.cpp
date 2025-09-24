@@ -1875,11 +1875,19 @@ static ggml_backend_dev_t ggml_backend_webgpu_reg_get_device(ggml_backend_reg_t 
 
     // Initialize device
     std::vector<wgpu::FeatureName> required_features = { wgpu::FeatureName::ShaderF16,
+                                                         wgpu::FeatureName::Subgroups,
                                                          wgpu::FeatureName::ImplicitDeviceSynchronization };
     wgpu::DeviceDescriptor         dev_desc;
     dev_desc.requiredLimits       = &ctx->limits;
     dev_desc.requiredFeatures     = required_features.data();
     dev_desc.requiredFeatureCount = required_features.size();
+    // chain AllowUnsafeAPIs to enable mapWriteAsync
+    wgpu::DawnTogglesDescriptor toggles_desc;
+    const char *              toggles[] = { "allow_unsafe_apis" };
+    toggles_desc.enabledToggleCount   = 1;
+    toggles_desc.enabledToggles      = toggles;
+    dev_desc.nextInChain       = &toggles_desc;
+
     dev_desc.SetDeviceLostCallback(
         wgpu::CallbackMode::AllowSpontaneous,
         [](const wgpu::Device & device, wgpu::DeviceLostReason reason, wgpu::StringView message) {

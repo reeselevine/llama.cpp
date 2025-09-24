@@ -121,6 +121,8 @@ fn add_sinks(val: f32, i2: u32, max_val: f32) -> f32 {
 
 #define(SHADER)
 enable f16;
+enable subgroups;
+enable chromium_disable_uniformity_analysis;
 
 struct Params {
     offset_src0: u32,
@@ -163,13 +165,18 @@ var<storage, read_write> src: array<f32>;
 
 DECLS
 
+const CACHE_SIZE: u32 = 16;
+
 override wg_size: u32;
-var<workgroup> scratch: array<f32, wg_size>;
+
+var<workgroup> ctr: atomic<u32>;
+
+var<workgroup> scratch: array<f32, 16>;
 
 @compute @workgroup_size(wg_size)
 fn main(@builtin(workgroup_id) wid: vec3<u32>,
-        @builtin(local_invocation_id) lid: vec3<u32>) {
-
+        @builtin(local_invocation_id) lid: vec3<u32>,
+        @builtin(subgroup_invocation_id) sid: u32) {
     var i = wid.x;
     let i3 = i / (params.ne2 * params.ne1);
     i = i % (params.ne2 * params.ne1);
@@ -183,6 +190,7 @@ fn main(@builtin(workgroup_id) wid: vec3<u32>,
     let head = f32(i2);
     let slope = select(1, select(pow(params.m1, 2 * (head - params.n_head_log2) + 1), pow(params.m0, head + 1), head < params.n_head_log2), params.max_bias > 0);
 
+    var cache: array<f32, CACHE_SIZE>;
 
     var max_val = lower_max_bound(i2);
     for (var j: u32 = 0; j < elems; j++) {
@@ -190,12 +198,20 @@ fn main(@builtin(workgroup_id) wid: vec3<u32>,
         if (col < params.ne0) {
             let val = src[i_src0_row + col] * params.scale + slope * mask_val(i_src1_row + col);
             max_val = max(max_val, val);
+            if (col < CACHE_SIZE) {
+                cache[col] = val;
+            }
         }
     }
 
-    scratch[lid.x] = max_val;
+    max_val = subgroupMax(max_val);
+    if (sid == 0) {
+        var idx = atomicAdd(&ctr, 1);
+        scratch[idx] = max_val;
+    }
     workgroupBarrier();
-    var offset = wg_size / 2;
+
+    var offset = atomicLoad(&ctr) - 1;
     while (offset > 0) {
         if (lid.x < offset) {
             scratch[lid.x] = max(scratch[lid.x], scratch[lid.x + offset]);
@@ -203,22 +219,41 @@ fn main(@builtin(workgroup_id) wid: vec3<u32>,
         offset = offset / 2;
         workgroupBarrier();
     }
+
     let row_max = scratch[0];
 
     var sum = 0.0f;
     for (var j: u32 = 0; j < elems; j++) {
         let col = j * wg_size + lid.x;
         if (col < params.ne0) {
-            let val = src[i_src0_row + col] * params.scale + slope * mask_val(i_src1_row + col);
+            var val: f32;
+            if (col < CACHE_SIZE) {
+                val = cache[col];
+            } else {
+                val = src[i_src0_row + col] * params.scale + slope * mask_val(i_src1_row + col);
+            }
             let ex = exp(val - row_max);
             sum += ex;
-            dst[i_dst_row + col] = ex;
+            if (col < CACHE_SIZE) {
+                cache[col] = ex;
+            } else {
+                dst[i_dst_row + col] = ex;
+            }
         }
     }
 
-    scratch[lid.x] = sum;
+    sum = subgroupAdd(sum);
+    if (lid.x == 0) {
+        atomicStore(&ctr, 0);
+    }
     workgroupBarrier();
-    offset = wg_size / 2;
+    if (sid == 0) {
+        var idx = atomicAdd(&ctr, 1);
+        scratch[idx] = sum;
+    }
+    workgroupBarrier();
+
+    offset = atomicLoad(&ctr) - 1;
     while (offset > 0) {
         if (lid.x < offset) {
             scratch[lid.x] += scratch[lid.x + offset];
@@ -226,13 +261,18 @@ fn main(@builtin(workgroup_id) wid: vec3<u32>,
         offset = offset / 2;
         workgroupBarrier();
     }
+
     let row_sum = add_sinks(scratch[0], i2, row_max);
 
     let sum_recip = 1.0 / row_sum;
     for  (var j: u32 = 0; j < elems; j++) {
         let col = j * wg_size + lid.x;
         if (col < params.ne0) {
-            dst[i_dst_row + col] *= sum_recip;
+            if (col < CACHE_SIZE) {
+                dst[i_dst_row + col] = cache[col] * sum_recip;
+            } else {
+                dst[i_dst_row + col] *= sum_recip;
+            }
         }
     }
 }
