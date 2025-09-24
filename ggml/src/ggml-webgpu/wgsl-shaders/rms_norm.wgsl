@@ -84,7 +84,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i2 = i / params.ne1;
     let i1 = i % params.ne1;
     let i_src_row = params.offset_src + i3 * params.stride_src3 + i2 * params.stride_src2 + i1 * params.stride_src1;
-    let i_dst_row = params.offset_src + i3 * params.stride_dst3 + i2 * params.stride_dst2 + i1 * params.stride_dst1;
+    let i_dst_row = params.offset_dst + i3 * params.stride_dst3 + i2 * params.stride_dst2 + i1 * params.stride_dst1;
 
     var sum = 0.0f;
     for (var j: u32 = 0; j < params.ne0; j++) {
