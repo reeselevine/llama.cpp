@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - master
+      - soft_max
     paths: [
       '.github/workflows/build.yml',
       '.github/workflows/build-linux-cross.yml',
