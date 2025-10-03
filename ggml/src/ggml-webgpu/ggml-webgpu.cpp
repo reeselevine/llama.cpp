@@ -120,17 +120,25 @@ struct webgpu_buf_pool {
     }
 
     webgpu_pool_bufs alloc_bufs() {
+        std::cout << "alloc_bufs() acquire lock\n";
         std::unique_lock<std::mutex> lock(mutex);
+        std::cout << "alloc_bufs() lock acquired\n";
         cv.wait(lock, [this] { return !free.empty(); });
+        std::cout << "alloc_bufs() buffer allocated\n";
         webgpu_pool_bufs bufs = free.back();
         free.pop_back();
         return bufs;
     }
 
     void free_bufs(std::vector<webgpu_pool_bufs> bufs) {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::cout << "free_bufs() acquire lock\n";
+        mutex.lock();
+        std::cout << "free_bufs() lock acquired\n";
         free.insert(free.end(), bufs.begin(), bufs.end());
-        cv.notify_all();
+        mutex.unlock();
+        for (size_t i = 0; i < bufs.size(); i++) {
+            cv.notify_one();
+        }
     }
 
     void cleanup() {
