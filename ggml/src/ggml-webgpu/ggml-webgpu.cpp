@@ -445,7 +445,9 @@ static webgpu_command ggml_backend_webgpu_build(webgpu_context &                
                                                 std::optional<webgpu_pool_bufs>   set_rows_error_bufs = std::nullopt) {
     webgpu_pool_bufs params_bufs = ctx->param_buf_pool.alloc_bufs();
 
+    std::cout << "Mapping params buffer\n";
     ggml_backend_webgpu_map_buffer(ctx, params_bufs.host_buf, wgpu::MapMode::Write, 0, params_bufs.host_buf.GetSize());
+    std::cout << "Params buffer mapped\n";
     uint32_t * _params = (uint32_t *) params_bufs.host_buf.GetMappedRange();
     for (size_t i = 0; i < params.size(); i++) {
         _params[i] = params[i];
