@@ -310,7 +310,9 @@ static void ggml_backend_webgpu_wait(webgpu_context & ctx, std::vector<wgpu::Fut
     // so wait in batches (64 is what Dawn supports).
     for (size_t i = 0; i < wait_infos.size(); i += WEBGPU_WAIT_ANY_BATCH_SIZE) {
         size_t end = std::min(i + WEBGPU_WAIT_ANY_BATCH_SIZE, wait_infos.size());
+        std::cout << "Waiting for " << (end - i) << " futures\n";
         ctx->instance.WaitAny(end - i, wait_infos.data() + i, UINT64_MAX);
+        std::cout << "Waited for " << (end - i) << " futures\n";
     }
 }
 
@@ -341,6 +343,7 @@ static void ggml_backend_webgpu_map_buffer(webgpu_context & ctx,
                                            wgpu::MapMode    mode,
                                            size_t           offset,
                                            size_t           size) {
+    std::cout << "Waiting for buffer map\n";
     ctx->instance.WaitAny(buffer.MapAsync(mode, offset, size, wgpu::CallbackMode::AllowSpontaneous,
                                           [](wgpu::MapAsyncStatus status, wgpu::StringView message) {
                                               if (status != wgpu::MapAsyncStatus::Success) {
@@ -349,6 +352,7 @@ static void ggml_backend_webgpu_map_buffer(webgpu_context & ctx,
                                               }
                                           }),
                           UINT64_MAX);
+    std::cout << "Buffer mapped\n";
 }
 
 #ifdef GGML_WEBGPU_DEBUG
@@ -1304,6 +1308,7 @@ static void ggml_backend_webgpu_buffer_set_tensor(ggml_backend_buffer_t buffer,
                                           remaining_size);
     } else {
         // wait for WriteBuffer to complete
+        std::cout << "waiting for WriteBuffer to complete\n";
         webgpu_ctx->instance.WaitAny(
             webgpu_ctx->queue.OnSubmittedWorkDone(wgpu::CallbackMode::AllowSpontaneous,
                                            [](wgpu::QueueWorkDoneStatus status, wgpu::StringView message) {
@@ -1313,6 +1318,7 @@ static void ggml_backend_webgpu_buffer_set_tensor(ggml_backend_buffer_t buffer,
                                                }
                                            }),
             UINT64_MAX);
+        std::cout << "WriteBuffer completed\n";
     }
     WEBGPU_CPU_PROFILE_TOTAL_END(set_tensor, webgpu_ctx);
 }
