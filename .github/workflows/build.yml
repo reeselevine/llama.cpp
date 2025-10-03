@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - master
+      - profiling-new
     paths: [
       '.github/workflows/build.yml',
       '.github/workflows/build-linux-cross.yml',
@@ -56,6 +57,7 @@ env:
 
 jobs:
   macOS-latest-cmake-arm64:
+    if: false
     runs-on: macos-latest
 
     steps:
@@ -97,6 +99,7 @@ jobs:
           ctest -L 'main|curl' --verbose --timeout 900
 
   macOS-latest-cmake-x64:
+    if: false
     runs-on: macos-13
 
     steps:
@@ -197,6 +200,7 @@ jobs:
           - build: 'ppc64le'
             os: ubuntu-24.04-ppc64le
 
+    if: false
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -269,6 +273,7 @@ jobs:
           ./bin/llama-cli -m stories260K-be.gguf -p "One day, Lily met a Shoggoth" -n 500 -c 256
 
   ubuntu-latest-cmake-sanitizer:
+    if: false
     runs-on: ubuntu-latest
 
     continue-on-error: true
@@ -323,6 +328,7 @@ jobs:
           ctest -L main --verbose --timeout 900
 
   ubuntu-latest-llguidance:
+    if: false
     runs-on: ubuntu-latest
 
     steps:
@@ -353,6 +359,7 @@ jobs:
           ctest -L main --verbose --timeout 900
 
   ubuntu-latest-cmake-rpc:
+    if: false
     runs-on: ubuntu-latest
 
     continue-on-error: true
@@ -388,6 +395,7 @@ jobs:
           ctest -L main --verbose
 
   ubuntu-24-cmake-vulkan:
+    if: false
     runs-on: ubuntu-24.04
 
     steps:
@@ -496,6 +504,7 @@ jobs:
           ctest -L main --verbose --timeout 3600
 
   ubuntu-22-cmake-hip:
+    if: false
     runs-on: ubuntu-22.04
     container: rocm/dev-ubuntu-22.04:6.1.2
 
@@ -526,6 +535,7 @@ jobs:
           cmake --build build --config Release -j $(nproc)
 
   ubuntu-22-cmake-musa:
+    if: false
     runs-on: ubuntu-22.04
     container: mthreads/musa:rc4.3.0-devel-ubuntu22.04-amd64
 
@@ -554,6 +564,7 @@ jobs:
           cmake --build build --config Release -j $(nproc)
 
   ubuntu-22-cmake-sycl:
+    if: false
     runs-on: ubuntu-22.04
 
     continue-on-error: true
@@ -602,6 +613,7 @@ jobs:
           cmake --build build --config Release -j $(nproc)
 
   ubuntu-22-cmake-sycl-fp16:
+    if: false
     runs-on: ubuntu-22.04
 
     continue-on-error: true
@@ -657,6 +669,7 @@ jobs:
     uses: ./.github/workflows/build-cmake-pkg.yml
 
   macOS-latest-cmake-ios:
+    if: false
     runs-on: macos-latest
 
     steps:
@@ -694,6 +707,7 @@ jobs:
           cmake --build build --config Release -j $(sysctl -n hw.logicalcpu) -- CODE_SIGNING_ALLOWED=NO
 
   macOS-latest-cmake-tvos:
+    if: false
     runs-on: macos-latest
 
     steps:
@@ -731,6 +745,7 @@ jobs:
           cmake --build build --config Release -j $(sysctl -n hw.logicalcpu) -- CODE_SIGNING_ALLOWED=NO
 
   macOS-latest-cmake-visionos:
+    if: false
     runs-on: macos-latest
 
     steps:
@@ -762,6 +777,7 @@ jobs:
           cmake --build build --config Release -j $(sysctl -n hw.logicalcpu) -- CODE_SIGNING_ALLOWED=NO
 
   macOS-latest-swift:
+    if: false
     runs-on: macos-latest
     needs: ios-xcode-build
 
@@ -808,6 +824,7 @@ jobs:
           cmake --build build --config Release -j $(sysctl -n hw.logicalcpu)
 
   windows-msys2:
+    if: false
     runs-on: windows-2025
 
     strategy:
@@ -858,6 +875,7 @@ jobs:
             cmake --build build --config ${{ matrix.build }} -j $(nproc)
 
   windows-latest-cmake:
+    if: false
     runs-on: windows-2025
 
     env:
@@ -988,6 +1006,7 @@ jobs:
       #     & $sde -future -- ctest -L main -C Release --verbose --timeout 900
 
   ubuntu-latest-cmake-cuda:
+    if: false
     runs-on: ubuntu-latest
     container: nvidia/cuda:12.6.2-devel-ubuntu24.04
 
@@ -1021,6 +1040,7 @@ jobs:
             cmake --build build
 
   windows-2022-cmake-cuda:
+    if: false
     runs-on: windows-2022
 
     strategy:
@@ -1073,6 +1093,7 @@ jobs:
           cmake --build build --config Release
 
   windows-latest-cmake-sycl:
+    if: false
     runs-on: windows-2022
 
     defaults:
@@ -1106,6 +1127,7 @@ jobs:
         run:  examples/sycl/win-build-sycl.bat
 
   windows-latest-cmake-hip:
+    if: false
     runs-on: windows-2022
 
     env:
@@ -1194,6 +1216,7 @@ jobs:
           cmake --build build -j ${env:NUMBER_OF_PROCESSORS}
 
   ios-xcode-build:
+    if: false
     runs-on: macos-latest
 
     steps:
@@ -1240,6 +1263,7 @@ jobs:
           xcodebuild -project examples/llama.swiftui/llama.swiftui.xcodeproj -scheme llama.swiftui -sdk iphoneos CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= -destination 'generic/platform=iOS' FRAMEWORK_FOLDER_PATH=./build-ios build
 
   android-build:
+    if: false
     runs-on: ubuntu-latest
 
     steps:
@@ -1270,7 +1294,8 @@ jobs:
           ./gradlew build --no-daemon
 
   openEuler-latest-cmake-cann:
-    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'Ascend NPU') }}
+    if: false
+    #if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'Ascend NPU') }}
     defaults:
       run:
         shell: bash -el {0}
@@ -1307,6 +1332,7 @@ jobs:
 # TODO: simplify the following workflows using a matrix
 # TODO: run lighter CI on PRs and the full CI only on master (if needed)
   ggml-ci-x64-cpu-low-perf:
+    if: false
     runs-on: ubuntu-22.04
 
     steps:
@@ -1332,6 +1358,7 @@ jobs:
           LLAMA_ARG_THREADS=$(nproc) GG_BUILD_LOW_PERF=1 bash ./ci/run.sh ./tmp/results ./tmp/mnt
 
   ggml-ci-arm64-cpu-low-perf:
+    if: false
     runs-on: ubuntu-22.04-arm
 
     steps:
@@ -1357,6 +1384,7 @@ jobs:
           LLAMA_ARG_THREADS=$(nproc) GG_BUILD_LOW_PERF=1 bash ./ci/run.sh ./tmp/results ./tmp/mnt
 
   ggml-ci-x64-cpu-high-perf:
+    if: false
     runs-on: ubuntu-22.04
 
     steps:
@@ -1382,6 +1410,7 @@ jobs:
           LLAMA_ARG_THREADS=$(nproc) bash ./ci/run.sh ./tmp/results ./tmp/mnt
 
   ggml-ci-arm64-cpu-high-perf:
+    if: false
     runs-on: ubuntu-22.04-arm
 
     steps:
@@ -1407,6 +1436,7 @@ jobs:
           LLAMA_ARG_THREADS=$(nproc) GG_BUILD_NO_SVE=1 GG_BUILD_NO_BF16=1 GG_BUILD_EXTRA_TESTS_0=1 bash ./ci/run.sh ./tmp/results ./tmp/mnt
 
   ggml-ci-arm64-cpu-high-perf-sve:
+    if: false
     runs-on: ubuntu-22.04-arm
 
     steps:
@@ -1432,6 +1462,7 @@ jobs:
           LLAMA_ARG_THREADS=$(nproc) GG_BUILD_NO_BF16=1 GG_BUILD_EXTRA_TESTS_0=1 bash ./ci/run.sh ./tmp/results ./tmp/mnt
 
   ggml-ci-x64-nvidia-cuda:
+    if: false
     runs-on: [self-hosted, Linux, X64, NVIDIA]
 
     steps:
@@ -1446,6 +1477,7 @@ jobs:
           GG_BUILD_CUDA=1 bash ./ci/run.sh ~/results/llama.cpp /mnt/llama.cpp
 
   ggml-ci-x64-nvidia-vulkan-cm:
+    if: false
     runs-on: [self-hosted, Linux, X64, NVIDIA]
 
     steps:
@@ -1460,6 +1492,7 @@ jobs:
           GG_BUILD_VULKAN=1 GGML_VK_DISABLE_COOPMAT2=1 bash ./ci/run.sh ~/results/llama.cpp /mnt/llama.cpp
 
   ggml-ci-x64-nvidia-vulkan-cm2:
+    if: false
     runs-on: [self-hosted, Linux, X64, NVIDIA, COOPMAT2]
 
     steps:
@@ -1474,6 +1507,7 @@ jobs:
           GG_BUILD_VULKAN=1 bash ./ci/run.sh ~/results/llama.cpp /mnt/llama.cpp
 
   ggml-ci-x64-cpu-amx:
+    if: false
     runs-on: [self-hosted, Linux, X64, CPU, AMX]
 
     steps:
@@ -1487,6 +1521,7 @@ jobs:
           bash ./ci/run.sh ~/results/llama.cpp /mnt/llama.cpp
 
   ggml-ci-mac-metal:
+    if: false
     runs-on: [self-hosted, macOS, ARM64]
 
     steps:
@@ -1500,6 +1535,7 @@ jobs:
           GG_BUILD_METAL=1 bash ./ci/run.sh ~/results/llama.cpp ~/mnt/llama.cpp
 
   ggml-ci-mac-vulkan:
+    if: false
     runs-on: [self-hosted, macOS, ARM64]
 
     steps:
