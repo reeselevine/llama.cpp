@@ -1329,7 +1329,9 @@ static void ggml_backend_webgpu_buffer_get_tensor(ggml_backend_buffer_t buffer,
         final_size = size + (4 - (size % 4));
     }
 
+    std::cout << "get_tensor acquire lock\n";
     std::lock_guard<std::recursive_mutex> lock(webgpu_ctx->mutex);
+    std::cout << "get_tensor lock acquired\n";
 
     if (webgpu_ctx->get_tensor_staging_buf == nullptr || webgpu_ctx->get_tensor_staging_buf.GetSize() < final_size) {
         // Create a new staging buffer if it doesn't exist or is too small

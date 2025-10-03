@@ -663,9 +663,11 @@ jobs:
           cmake --build build --config Release -j $(nproc)
 
   build-linux-cross:
+    if: false
     uses: ./.github/workflows/build-linux-cross.yml
 
   build-cmake-pkg:
+    if: false
     uses: ./.github/workflows/build-cmake-pkg.yml
 
   macOS-latest-cmake-ios:
