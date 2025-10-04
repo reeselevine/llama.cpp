@@ -58,7 +58,7 @@
 
 /* Constants */
 
-#define WEBGPU_COMMAND_SUBMIT_BATCH_SIZE     8
+#define WEBGPU_COMMAND_SUBMIT_BATCH_SIZE     1
 #define WEBGPU_WAIT_ANY_BATCH_SIZE           64
 #define WEBGPU_MUL_MAT_WG_SIZE               256
 #define WEBGPU_NUM_PARAM_BUFS                100
