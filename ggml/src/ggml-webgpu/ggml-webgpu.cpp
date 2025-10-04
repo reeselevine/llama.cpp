@@ -1195,26 +1195,28 @@ static ggml_status ggml_backend_webgpu_graph_compute(ggml_backend_t backend, str
 
     WEBGPU_CPU_PROFILE_DETAIL_START(graph_compute_encode);
     std::vector<webgpu_command> commands;
-    std::vector<wgpu::FutureWaitInfo> wait_infos;
+    //std::vector<wgpu::FutureWaitInfo> wait_infos;
     for (int i = 0; i < cgraph->n_nodes; i++) {
         if (auto cmd = ggml_webgpu_encode_node(ctx, cgraph->nodes[i])) {
             commands.push_back(*cmd);
         }
         if (commands.size() >= WEBGPU_COMMAND_SUBMIT_BATCH_SIZE) {
             std::vector<wgpu::FutureWaitInfo> new_infos = ggml_backend_webgpu_submit(ctx, commands);
-            wait_infos.insert(wait_infos.end(), new_infos.begin(), new_infos.end());
+            ggml_backend_webgpu_wait(ctx, new_infos);
+            //wait_infos.insert(wait_infos.end(), new_infos.begin(), new_infos.end());
             commands.clear();
         }
     }
     if (!commands.empty()) {
         std::vector<wgpu::FutureWaitInfo> new_infos = ggml_backend_webgpu_submit(ctx, commands);
-        wait_infos.insert(wait_infos.end(), new_infos.begin(), new_infos.end());
+        ggml_backend_webgpu_wait(ctx, new_infos);
+        //wait_infos.insert(wait_infos.end(), new_infos.begin(), new_infos.end());
         commands.clear();
     }
     WEBGPU_CPU_PROFILE_DETAIL_END(graph_compute_encode, ctx);
 
     WEBGPU_CPU_PROFILE_DETAIL_START(graph_compute_wait);
-    ggml_backend_webgpu_wait(ctx, wait_infos);
+    //ggml_backend_webgpu_wait(ctx, wait_infos);
     WEBGPU_CPU_PROFILE_DETAIL_END(graph_compute_wait, ctx);
 
     WEBGPU_CPU_PROFILE_TOTAL_END(graph_compute, ctx);
