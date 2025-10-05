@@ -1299,7 +1299,7 @@ jobs:
           ./gradlew build --no-daemon
 
   openEuler-latest-cmake-cann:
-    if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'Ascend NPU') }}
+    #if: ${{ github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'Ascend NPU') }}
     defaults:
       run:
         shell: bash -el {0}
