@@ -97,25 +97,23 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Determine the total number of threads based on mode
     var max_threads: u32; 
-    var i: u32;
     if {{BLOCK_SIZE}} > 1 {
         // Vectorized: one thread per vector of elements
         // # of total rows to go through * (# of threads per row)
         max_threads = (params.n_rows * params.ne2 * params.ne3) * (params.ne0 / {{BLOCK_SIZE}});
-        
-        // calculations are based off i being row, but when vectorized, it corresponds to a vector in a row
-        // getting the row from gid
-        i = gid.x / (params.ne0 / {{BLOCK_SIZE}});
     } else {
-        // Non-vectorized: one thread per row
-        // # of total rows in the matrix 
-        max_threads = params.n_rows * params.ne2 * params.ne3;
-        i = gid.x; // i corresponds to the row
+        // Non-vectorized: one thread per element
+        // # of total elemtns in matrix
+        max_threads = params.ne0 * params.n_rows * params.ne2 * params.ne3;
     }
 
     if (gid.x >= max_threads) {
         return;
     }
+
+    // calculations are based off i being row, but when vectorized, it corresponds to a vector in a row
+    // getting the row from gid
+    var i = gid.x / (params.ne0 / {{BLOCK_SIZE}});
 
 
     let i_src3 = i / (params.ne2 * params.n_rows);
@@ -142,20 +140,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i_dst_row = params.offset_dst + idx_high_val * params.stride_dst1 + i_src2 * params.stride_dst2 + i_src3 * params.stride_dst3;
     let i_src_row = params.offset_src + i_src1 * params.stride_src1 + i_src2 * params.stride_src2 + i_src3 * params.stride_src3;
 
-    if {{BLOCK_SIZE}} > 1 {
-        // Vectorized: one thread per vector of elements
+    // starts at what element of that row?
+    let element_offset = (gid.x % (params.ne0 / {{BLOCK_SIZE}})) * {{BLOCK_SIZE}};
 
-        // starts at what element of that row?
-        let element_offset = (gid.x % (params.ne0 / {{BLOCK_SIZE}})) * {{BLOCK_SIZE}};
-        copy_elements(i_src_row, i_dst_row, element_offset);
-
-    } else {
-        // Non-vectorized: go through each element in row, copy one by one
-        for (var i: u32 = 0; i < params.ne0; i++) {
-            copy_elements(i_src_row, i_dst_row, i);
-        }
-    }
-
+    copy_elements(i_src_row, i_dst_row, element_offset);
     
 }
 

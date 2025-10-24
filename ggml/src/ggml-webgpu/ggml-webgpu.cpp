@@ -774,8 +774,8 @@ static std::optional<webgpu_command> ggml_webgpu_set_rows(webgpu_context & ctx,
     // if not evenly divisble by 4, use the non-vectorized version
     if (src->ne[0] % 4 != 0) {
         pipeline = ctx->set_rows_pipeline[0][1];
-        // threads = number of rows
-        threads = src->ne[1] * src->ne[2] * src->ne[3];
+        // threads = number of elements
+        threads = src->ne[0] * src->ne[1] * src->ne[2] * src->ne[3];
     }
 
     uint32_t wg_x = (threads + max_wg_size - 1) / max_wg_size;
