@@ -78,7 +78,7 @@
 
 // Warning: must match values in mul_mat_fast.wgsl
 #define WEBGPU_MUL_MAT_TILE_M 4
-#define WEBGPU_MUL_MAT_TILE_N 2
+#define WEBGPU_MUL_MAT_TILE_N 4
 
 #define WEBGPU_MUL_MAT_WG_SIZE_M 16
 #define WEBGPU_MUL_MAT_WG_SIZE_N 8
@@ -462,7 +462,7 @@ static void ggml_backend_webgpu_debug(webgpu_context & ctx) {
     ctx->queue.Submit(1, &commands);
 
     ggml_backend_webgpu_map_buffer(ctx, ctx->debug_host_buf, wgpu::MapMode::Read, 0, ctx->debug_host_buf.GetSize());
-    const uint32_t * debug_data = (const uint32_t *) ctx->debug_host_buf.GetConstMappedRange();
+    const float * debug_data = (const float *) ctx->debug_host_buf.GetConstMappedRange();
     std::cout << "debug data:";
     for (size_t i = 0; i < WEBGPU_DEBUG_BUF_ELEMS; i++) {
         std::cout << "  " << i << ": " << debug_data[i];
@@ -864,7 +864,7 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
         (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src1) / ggml_type_size(src1->type)),
         (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, dst) / ggml_type_size(dst->type)),
         (uint32_t) dst->ne[0],                                  // number of rows in result (M, transposed)
-        (uint32_t) dst->ne[1],                                  // number of columns in result (N)
+        (uint32_t) dst->ne[1],                                  // number of columns in result (N, transposed)
         (uint32_t) src0->ne[0],                                 // number of columns in src0/src1 (K)
         (uint32_t) (src0->nb[1] / ggml_type_size(src0->type)),  // stride (elements/blocks) of src0 in dimension 1
         (uint32_t) (src1->nb[1] / ggml_type_size(src1->type)),  // stride (elements/blocks) of src1 in dimension 1
@@ -907,6 +907,7 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
             switch (src0->type) {
                 case GGML_TYPE_F32:
                 case GGML_TYPE_F16:
+                case GGML_TYPE_Q4_0:
                     use_fast = true;
                     break;
                 default:
@@ -1709,6 +1710,12 @@ static void ggml_webgpu_init_mul_mat_pipeline(webgpu_context & webgpu_ctx) {
         webgpu_ctx->device, wgsl_mul_mat_fast_f16_f16, "mul_mat_fast_f16_f16", mul_mat_fast_constants);
     webgpu_ctx->mul_mat_pipelines[GGML_TYPE_F16][GGML_TYPE_F16][1] = ggml_webgpu_create_pipeline2(
         webgpu_ctx->device, wgsl_mul_mat_fast_f16_f16_vec, "mul_mat_fast_f16_f16_vec", mul_mat_fast_constants);
+
+    // quantized
+    webgpu_ctx->mul_mat_pipelines[GGML_TYPE_Q4_0][GGML_TYPE_F32][0] = ggml_webgpu_create_pipeline2(
+        webgpu_ctx->device, wgsl_mul_mat_fast_q4_0, "mul_mat_fast_q4_0", mul_mat_fast_constants);
+    webgpu_ctx->mul_mat_pipelines[GGML_TYPE_Q4_0][GGML_TYPE_F32][1] = ggml_webgpu_create_pipeline2(
+        webgpu_ctx->device, wgsl_mul_mat_fast_q4_0_vec, "mul_mat_fast_q4_0_vec", mul_mat_fast_constants);
 }
 
 static void ggml_webgpu_init_set_rows_pipeline(webgpu_context & webgpu_ctx) {

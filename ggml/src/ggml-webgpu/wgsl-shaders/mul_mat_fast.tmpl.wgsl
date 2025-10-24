@@ -172,7 +172,7 @@ struct MulMatParams {
 
 @group(0) @binding(0) var<storage, read_write> src0: array<{{SRC0_TYPE}}>; // M rows, K columns
 @group(0) @binding(1) var<storage, read_write> src1: array<{{SRC1_TYPE}}>; // K rows, N columns (transposed)
-@group(0) @binding(2) var<storage, read_write> dst: array<{{DST_TYPE}}>; // M rows, N columns
+@group(0) @binding(2) var<storage, read_write> dst: array<{{DST_TYPE}}>; // M rows, N columns (transposed)
 
 @group(0) @binding(3) var<uniform> params: MulMatParams;
 
@@ -187,9 +187,9 @@ fn get_local_m(thread_id: u32) -> u32 {
 
 
 // Warning: cannot be overrides, must match values in ggml-webgpu.cpp
-const TILE_N = 2u;
 // must be multiple of 4 for vec4 loads
 const TILE_M = 4u;
+const TILE_N = 4u;
 
 override WORKGROUP_SIZE_M: u32;
 override WORKGROUP_SIZE_N: u32;
