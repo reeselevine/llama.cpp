@@ -6,46 +6,24 @@
     "REPLS": {
       "TYPE" : "vec4<f32>",
       "DST_TYPE": "vec4<f16>",
-      "BLOCK_SIZE": 4
-    },
-    "DECLS": ["F16_VEC"]
+      "VEC_SIZE": 4
+    }
   },
   {
     "SHADER_SUFFIX": "f16",
     "REPLS": {
       "TYPE" : "f32",
       "DST_TYPE": "f16",
-      "BLOCK_SIZE": 1
-    },
-    "DECLS": ["F16"]
+      "VEC_SIZE": 1
+    }
   }
 ]
 
 #end(VARIANTS)
 
-#define(DECLS)
-
-#decl(F16_VEC)
-fn copy_elements(src_base: u32, dst_base: u32, offset: u32) {
-    let src_vec_index = (src_base + offset) / {{BLOCK_SIZE}};
-    let dst_vec_index = (dst_base + offset) / {{BLOCK_SIZE}};
-    dst[dst_vec_index] = vec4<f16>(src[src_vec_index]);
-}
-#enddecl(F16_VEC)
-
-#decl(F16)
-fn copy_elements(src_base: u32, dst_base: u32, offset: u32) {
-    dst[dst_base + offset] = f16(src[src_base + offset]);
-}
-#enddecl(F16)
-
-#end(DECLS)
-
 #define(SHADER)
 
 enable f16;
-
-DECLS
 
 @group(0) @binding(0)
 var<storage, read_write> src: array<{{TYPE}}>;
@@ -79,7 +57,7 @@ struct Params {
 
     // Shape of src
     ne0: u32,
-    n_rows: u32, // n_rows = ne1 = rows per slice
+    n_rows: u32,
     ne2: u32,
     ne3: u32,
 
@@ -94,27 +72,13 @@ var<uniform> params: Params;
 override wg_size: u32;
 @compute @workgroup_size(wg_size)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-
-    // Determine the total number of threads based on mode
-    var max_threads: u32; 
-    if {{BLOCK_SIZE}} > 1 {
-        // Vectorized: one thread per vector of elements
-        // # of total rows to go through * (# of threads per row)
-        max_threads = (params.n_rows * params.ne2 * params.ne3) * (params.ne0 / {{BLOCK_SIZE}});
-    } else {
-        // Non-vectorized: one thread per element
-        // # of total elemtns in matrix
-        max_threads = params.ne0 * params.n_rows * params.ne2 * params.ne3;
-    }
-
-    if (gid.x >= max_threads) {
+    if (gid.x >= (params.ne3 * params.ne2 * params.n_rows * params.ne0) / {{VEC_SIZE}}) {
         return;
     }
 
-    // calculations are based off i being row, but when vectorized, it corresponds to a vector in a row
     // getting the row from gid
-    var i = gid.x / (params.ne0 / {{BLOCK_SIZE}});
-
+    let elems_per_row = params.ne0 / {{VEC_SIZE}};
+    var i = gid.x / elems_per_row;
 
     let i_src3 = i / (params.ne2 * params.n_rows);
 
@@ -141,10 +105,8 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i_src_row = params.offset_src + i_src1 * params.stride_src1 + i_src2 * params.stride_src2 + i_src3 * params.stride_src3;
 
     // starts at what element of that row?
-    let element_offset = (gid.x % (params.ne0 / {{BLOCK_SIZE}})) * {{BLOCK_SIZE}};
-
-    copy_elements(i_src_row, i_dst_row, element_offset);
-    
+    let col_idx = (gid.x % elems_per_row);
+    dst[i_dst_row/{{VEC_SIZE}} + col_idx] = {{DST_TYPE}}(src[i_src_row/{{VEC_SIZE}} + col_idx]);
 }
 
 #end(SHADER)
