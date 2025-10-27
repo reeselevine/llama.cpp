@@ -248,7 +248,7 @@ struct webgpu_context_struct {
 
     webgpu_pipeline memset_pipeline;
     webgpu_pipeline mul_mat_pipeline[30][2];
-    webgpu_pipeline set_rows_pipeline[1][2]; // dst->type, vectorized (0 for vectorized, 1 for non vectorized)
+    webgpu_pipeline set_rows_pipeline[1][2];  // dst->type, vectorized (0 for vectorized, 1 for non vectorized)
     webgpu_pipeline get_rows_pipeline[30];
     webgpu_pipeline get_rows_f32_no_vec_pipeline;
     webgpu_pipeline cpy_pipeline[2][2];          // src type, dst type
@@ -766,15 +766,15 @@ static std::optional<webgpu_command> ggml_webgpu_set_rows(webgpu_context & ctx,
         { .binding = 3, .buffer = error_bufs.dev_buf, .offset = 0, .size = error_bufs.dev_buf.GetSize() }
     };
 
-    size_t   max_wg_size = ctx->max_wg_size_x;
-    // number of threads needed with vec4 = (total number of rows in matrix) * (number of elements in a row / 4)
-    uint32_t threads = (src->ne[1] * src->ne[2] * src->ne[3]) * (src->ne[0] / 4);
+    size_t max_wg_size = ctx->max_wg_size_x;
 
-    webgpu_pipeline pipeline = ctx->set_rows_pipeline[0][0];
+    int             vectorized = src->ne[0] % 4 == 0;
+    webgpu_pipeline pipeline   = ctx->set_rows_pipeline[0][vectorized];
     // if not evenly divisble by 4, use the non-vectorized version
-    if (src->ne[0] % 4 != 0) {
-        pipeline = ctx->set_rows_pipeline[0][1];
-        // threads = number of elements
+    uint32_t        threads;
+    if (vectorized) {
+        threads = (src->ne[1] * src->ne[2] * src->ne[3]) * (src->ne[0] / 4);
+    } else {
         threads = src->ne[0] * src->ne[1] * src->ne[2] * src->ne[3];
     }
 
@@ -1631,11 +1631,10 @@ static void ggml_webgpu_init_mul_mat_pipeline(webgpu_context & webgpu_ctx) {
 }
 
 static void ggml_webgpu_init_set_rows_pipeline(webgpu_context & webgpu_ctx) {
-    // create_pipeline(device, pipeline, shader_code, label, constants)
-    ggml_webgpu_create_pipeline(webgpu_ctx->device, webgpu_ctx->set_rows_pipeline[0][1], wgsl_set_rows_f16, "set_rows_f16",
-                                ggml_webgpu_wg_size_entry(webgpu_ctx->max_wg_size_x));
-    ggml_webgpu_create_pipeline(webgpu_ctx->device, webgpu_ctx->set_rows_pipeline[0][0], wgsl_set_rows_f16_vec, "set_rows_f16_vec",
-                                ggml_webgpu_wg_size_entry(webgpu_ctx->max_wg_size_x));
+    ggml_webgpu_create_pipeline(webgpu_ctx->device, webgpu_ctx->set_rows_pipeline[0][0], wgsl_set_rows_f16,
+                                "set_rows_f16", ggml_webgpu_wg_size_entry(webgpu_ctx->max_wg_size_x));
+    ggml_webgpu_create_pipeline(webgpu_ctx->device, webgpu_ctx->set_rows_pipeline[0][1], wgsl_set_rows_f16_vec,
+                                "set_rows_f16_vec", ggml_webgpu_wg_size_entry(webgpu_ctx->max_wg_size_x));
 }
 
 static void ggml_webgpu_init_get_rows_pipeline(webgpu_context & webgpu_ctx) {
