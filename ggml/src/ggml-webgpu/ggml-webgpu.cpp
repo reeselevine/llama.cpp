@@ -9,6 +9,10 @@
 #include "ggml-impl.h"
 #include "ggml-wgsl-shaders.hpp"
 
+#ifdef __EMSCRIPTEN__
+#    include <emscripten/emscripten.h>
+#endif
+
 #include <webgpu/webgpu_cpp.h>
 
 #include <atomic>
@@ -2382,13 +2386,17 @@ static ggml_backend_dev_t ggml_backend_webgpu_reg_get_device(ggml_backend_reg_t 
 
     webgpu_context ctx = reg_ctx->webgpu_ctx;
 
+    wgpu::RequestAdapterOptions options = {};
+
+#ifndef __EMSCRIPTEN__
     // TODO: track need for these toggles: https://issues.chromium.org/issues/42251215
     const char * const          adapterEnabledToggles[] = { "vulkan_enable_f16_on_nvidia", "use_vulkan_memory_model" };
     wgpu::DawnTogglesDescriptor adapterTogglesDesc;
     adapterTogglesDesc.enabledToggles     = adapterEnabledToggles;
     adapterTogglesDesc.enabledToggleCount = 2;
-    wgpu::RequestAdapterOptions options   = {};
     options.nextInChain                   = &adapterTogglesDesc;
+#endif
+
     ctx->instance.WaitAny(ctx->instance.RequestAdapter(
                               &options, wgpu::CallbackMode::AllowSpontaneous,
                               [&ctx](wgpu::RequestAdapterStatus status, wgpu::Adapter adapter, const char * message) {
@@ -2438,7 +2446,11 @@ static ggml_backend_dev_t ggml_backend_webgpu_reg_get_device(ggml_backend_reg_t 
 
     // Initialize device
     std::vector<wgpu::FeatureName> required_features = { wgpu::FeatureName::ShaderF16,
-                                                         wgpu::FeatureName::ImplicitDeviceSynchronization };
+#ifndef __EMSCRIPTEN__
+                                                         wgpu::FeatureName::ImplicitDeviceSynchronization
+#endif
+    };
+
     if (ctx->supports_subgroup_matrix) {
         required_features.push_back(wgpu::FeatureName::Subgroups);
         required_features.push_back(wgpu::FeatureName::ChromiumExperimentalSubgroupMatrix);
@@ -2447,19 +2459,6 @@ static ggml_backend_dev_t ggml_backend_webgpu_reg_get_device(ggml_backend_reg_t 
 #ifdef GGML_WEBGPU_GPU_PROFILE
     required_features.push_back(wgpu::FeatureName::TimestampQuery);
 #endif
-
-    // Enable Dawn-specific toggles to increase native performance
-    // TODO: Don't enable for WASM builds, they won't have an effect anyways
-    // TODO: Maybe WebGPU needs a "fast" mode where you can request compilers skip adding checks like these,
-    //       only for native performance?
-    const char * const deviceEnabledToggles[]  = { "skip_validation", "disable_robustness", "disable_workgroup_init",
-                                                   "disable_polyfills_on_integer_div_and_mod" };
-    const char * const deviceDisabledToggles[] = { "timestamp_quantization" };
-    wgpu::DawnTogglesDescriptor deviceTogglesDesc;
-    deviceTogglesDesc.enabledToggles      = deviceEnabledToggles;
-    deviceTogglesDesc.enabledToggleCount  = 4;
-    deviceTogglesDesc.disabledToggles     = deviceDisabledToggles;
-    deviceTogglesDesc.disabledToggleCount = 1;
 
     wgpu::DeviceDescriptor dev_desc;
     dev_desc.requiredLimits       = &ctx->limits;
@@ -2478,7 +2477,23 @@ static ggml_backend_dev_t ggml_backend_webgpu_reg_get_device(ggml_backend_reg_t 
             GGML_ABORT("ggml_webgpu: Device error! Reason: %d, Message: %s\n", static_cast<int>(reason),
                        std::string(message).c_str());
         });
+
+#ifndef __EMSCRIPTEN__
+    // Enable Dawn-specific toggles to increase native performance
+    // TODO: Maybe WebGPU needs a "fast" mode where you can request compilers skip adding checks like these,
+    //       only for native performance?
+    const char * const deviceEnabledToggles[]  = { "skip_validation", "disable_robustness", "disable_workgroup_init",
+                                                   "disable_polyfills_on_integer_div_and_mod" };
+    const char * const deviceDisabledToggles[] = { "timestamp_quantization" };
+    wgpu::DawnTogglesDescriptor deviceTogglesDesc;
+    deviceTogglesDesc.enabledToggles      = deviceEnabledToggles;
+    deviceTogglesDesc.enabledToggleCount  = 4;
+    deviceTogglesDesc.disabledToggles     = deviceDisabledToggles;
+    deviceTogglesDesc.disabledToggleCount = 1;
+
     dev_desc.nextInChain = &deviceTogglesDesc;
+#endif
+
     ctx->instance.WaitAny(ctx->adapter.RequestDevice(
                               &dev_desc, wgpu::CallbackMode::AllowSpontaneous,
                               [ctx](wgpu::RequestDeviceStatus status, wgpu::Device device, wgpu::StringView message) {
@@ -2576,18 +2591,27 @@ ggml_backend_reg_t ggml_backend_webgpu_reg() {
     ctx.name         = GGML_WEBGPU_NAME;
     ctx.device_count = 1;
 
-    const char * const instanceEnabledToggles[] = { "allow_unsafe_apis" };
-
-    wgpu::DawnTogglesDescriptor instanceTogglesDesc;
-    instanceTogglesDesc.enabledToggles     = instanceEnabledToggles;
-    instanceTogglesDesc.enabledToggleCount = 1;
     wgpu::InstanceDescriptor               instance_descriptor{};
     std::vector<wgpu::InstanceFeatureName> instance_features = { wgpu::InstanceFeatureName::TimedWaitAny };
     instance_descriptor.requiredFeatures                     = instance_features.data();
     instance_descriptor.requiredFeatureCount                 = instance_features.size();
-    instance_descriptor.nextInChain                          = &instanceTogglesDesc;
+
+#ifndef __EMSCRIPTEN__
+    const char * const          instanceEnabledToggles[] = { "allow_unsafe_apis" };
+    wgpu::DawnTogglesDescriptor instanceTogglesDesc;
+    instanceTogglesDesc.enabledToggles     = instanceEnabledToggles;
+    instanceTogglesDesc.enabledToggleCount = 1;
+    instance_descriptor.nextInChain        = &instanceTogglesDesc;
+#endif
 
     webgpu_ctx->instance = wgpu::CreateInstance(&instance_descriptor);
+
+#ifdef __EMSCRIPTEN__
+    if (webgpu_ctx->instance == nullptr) {
+        GGML_LOG_ERROR("ggml_webgpu: Failed to create WebGPU instance. Make sure either -sASYNCIFY or -sJSPI is set\n");
+        return nullptr;
+    }
+#endif
     GGML_ASSERT(webgpu_ctx->instance != nullptr);
 
     static ggml_backend_reg reg = {
