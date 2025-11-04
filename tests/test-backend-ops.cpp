@@ -115,17 +115,23 @@ static void init_tensor_uniform(ggml_tensor * tensor, float min = -1.0f, float m
             };
 
             const size_t min_blocks_per_thread = 1;
-            const size_t n_threads = std::min<size_t>(N_THREADS/2,
-                                                      std::max<size_t>(1, n_blocks / min_blocks_per_thread));
-            std::vector<std::future<void>> tasks;
-            tasks.reserve(n_threads);
-            for (size_t i = 0; i < n_threads; i++) {
-                size_t start =     i*n_blocks/n_threads;
-                size_t end   = (i+1)*n_blocks/n_threads;
-                tasks.push_back(std::async(std::launch::async, quantize_thread, start, end));
-            }
-            for (auto & t : tasks) {
-                t.get();
+            const size_t n_quant_threads = std::min<size_t>(std::max<size_t>(N_THREADS/2, 1),
+                                                            std::max<size_t>(1, n_blocks / min_blocks_per_thread));
+
+            if (n_quant_threads == 1) {
+                // single-threaded quantization: do all blocks in the current thread
+                quantize_thread(0, n_blocks);
+            } else {
+                std::vector<std::future<void>> tasks;
+                tasks.reserve(n_quant_threads);
+                for (size_t i = 0; i < n_quant_threads; i++) {
+                    size_t start =     i*n_blocks/n_quant_threads;
+                    size_t end   = (i+1)*n_blocks/n_quant_threads;
+                    tasks.push_back(std::async(std::launch::async, quantize_thread, start, end));
+                }
+                for (auto & t : tasks) {
+                    t.get();
+                }
             }
         }
         ggml_backend_tensor_set(tensor, dataq.data(), 0, dataq.size());
