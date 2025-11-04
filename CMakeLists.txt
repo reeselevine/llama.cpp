@@ -36,6 +36,11 @@ option(LLAMA_USE_SYSTEM_GGML "Use system libggml" OFF)
 if (EMSCRIPTEN)
     set(BUILD_SHARED_LIBS_DEFAULT OFF)
 
+    # Use 64-bit memory to support backend_get_memory queries
+    # TODO: analyze performance impact, see https://spidermonkey.dev/blog/2025/01/15/is-memory64-actually-worth-using
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -sMEMORY64=1")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -sMEMORY64=1")
+
     option(LLAMA_WASM_SINGLE_FILE "llama: embed WASM inside the generated llama.js" OFF)
     option(LLAMA_BUILD_HTML "llama: build HTML file" ON)
     if (LLAMA_BUILD_HTML)
