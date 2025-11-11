@@ -56,8 +56,6 @@ if(EMSCRIPTEN)
         target_compile_options(ggml-webgpu PRIVATE "-fexceptions")
         target_link_options(ggml-webgpu INTERFACE "-sASYNCIFY" "-exceptions")
     endif()
-
-    set(DawnWebGPU_TARGET webgpu_cpp)
 else()
     find_package(Dawn REQUIRED)
     set(DawnWebGPU_TARGET dawn::webgpu_dawn)
