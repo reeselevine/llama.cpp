@@ -302,27 +302,6 @@ struct webgpu_context_struct {
     std::map<int, webgpu_pipeline> scale_pipelines;                          // inplace
     std::map<int, std::map<int, std::map<int, webgpu_pipeline>>> soft_max_pipelines; // mask_type, has_sink, inplace
 
-
-    // webgpu_pipeline memset_pipeline;
-
-    // std::map<int, std::map<int, std::map<int, webgpu_pipeline>>> mul_mat_pipelines;  // src0_type, src1_type, vectorized
-    // std::map<int, std::map<int, std::map<int, webgpu_pipeline>>>
-    //     mul_mat_vec_pipelines;                                                       // src0_type, src1_type, vectorized
-
-    // webgpu_pipeline set_rows_pipeline[1][2];  // dst->type, vectorized
-    // webgpu_pipeline get_rows_pipeline[30];
-    // webgpu_pipeline get_rows_f32_no_vec_pipeline;
-    // webgpu_pipeline cpy_pipeline[2][2];          // src type, dst type
-    // webgpu_pipeline add_pipeline[2][2];          // type, inplace
-    // webgpu_pipeline sub_pipeline[2][2];          // type, inplace
-    // webgpu_pipeline mul_pipeline[2][2];          // type, inplace
-    // webgpu_pipeline div_pipeline[2][2];          // type, inplace
-    // webgpu_pipeline rms_norm_pipeline[2];        // inplace
-    // webgpu_pipeline rope_pipeline[2][2][2];      // type, ff, inplace
-    // webgpu_pipeline glu_pipeline[7][2][2];       // glu-op, type, split
-    // webgpu_pipeline scale_pipeline[2];           // inplace
-    // webgpu_pipeline soft_max_pipeline[3][2][2];  // (no_mask, f32_mask, f16_mask), has_sink, inplace
-
     size_t memset_bytes_per_thread;
 
     // Staging buffer for reading data from the GPU
