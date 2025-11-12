@@ -683,6 +683,10 @@ static void ggml_backend_webgpu_buffer_memset(webgpu_context & ctx,
     ggml_backend_webgpu_wait(ctx, futures);
 }
 
+static uint32_t wg_x_calc(uint32_t threads, uint32_t max_wg_size) {
+    return (threads + max_wg_size - 1) / max_wg_size;
+}
+
 /** End WebGPU Actions */
 
 /** GGML Backend Interface */
@@ -798,7 +802,7 @@ static webgpu_command ggml_webgpu_cpy(webgpu_context & ctx, ggml_tensor * src, g
     };
 
     size_t   max_wg_size = ctx->max_wg_size_x;
-    uint32_t wg_x        = (ne + max_wg_size - 1) / max_wg_size;
+    uint32_t wg_x = wg_x_calc(ne, max_wg_size);
     return ggml_backend_webgpu_build(ctx, ctx->cpy_pipelines[src->type][dst->type], params, entries, wg_x);
 }
 
@@ -859,7 +863,7 @@ static std::optional<webgpu_command> ggml_webgpu_set_rows(webgpu_context & ctx,
         threads = src->ne[0] * src->ne[1] * src->ne[2] * src->ne[3];
     }
 
-    uint32_t wg_x = (threads + max_wg_size - 1) / max_wg_size;
+    uint32_t wg_x = wg_x_calc(threads, max_wg_size);
 
     return ggml_backend_webgpu_build(ctx, pipeline, params, entries, wg_x, 1, error_bufs);
 }
@@ -900,7 +904,7 @@ static webgpu_command ggml_webgpu_get_rows(webgpu_context & ctx,
     };
 
     size_t   max_wg_size = ctx->max_wg_size_x;
-    uint32_t wg_x        = (dst->ne[1] * dst->ne[2] * dst->ne[3] + max_wg_size - 1) / max_wg_size;
+    uint32_t wg_x = wg_x_calc(dst->ne[1] * dst->ne[2] * dst->ne[3], max_wg_size);
 
     uint32_t vectorized = !(src->type == GGML_TYPE_F32 && dst->ne[0] % 4 != 0);
     webgpu_pipeline pipeline = ctx->get_rows_pipelines[src->type][vectorized];
@@ -950,8 +954,9 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
 
     webgpu_pipeline pipeline = ctx->mul_mat_pipelines[src0->type][src1->type][0];
 
-    uint32_t wg_x =
-        (dst->ne[0] * dst->ne[1] * dst->ne[2] * dst->ne[3] + WEBGPU_MUL_MAT_WG_SIZE - 1) / WEBGPU_MUL_MAT_WG_SIZE;
+    // uint32_t wg_x =
+    //     (dst->ne[0] * dst->ne[1] * dst->ne[2] * dst->ne[3] + WEBGPU_MUL_MAT_WG_SIZE - 1) / WEBGPU_MUL_MAT_WG_SIZE;
+    uint32_t wg_x = wg_x_calc(dst->ne[0] * dst->ne[1] * dst->ne[2] * dst->ne[3], WEBGPU_MUL_MAT_WG_SIZE);
     uint32_t wg_y = 1;
 
     bool use_fast = false;
@@ -1058,7 +1063,7 @@ static webgpu_command ggml_webgpu_binary_op(webgpu_context &  ctx,
     }
 
     size_t   max_wg_size = ctx->max_wg_size_x;
-    uint32_t wg_x        = (ggml_nelements(dst) + max_wg_size - 1) / max_wg_size;
+    uint32_t wg_x = wg_x_calc(ggml_nelements(dst), max_wg_size);
     return ggml_backend_webgpu_build(ctx, pipeline, params, entries, wg_x);
 }
 
@@ -1181,7 +1186,7 @@ static webgpu_command ggml_webgpu_rope(webgpu_context & ctx,
 
     webgpu_pipeline pipeline    = ctx->rope_pipelines[dst->type][has_freq_factor][inplace];
     size_t          max_wg_size = ctx->max_wg_size_x;
-    uint32_t        wg_x        = (ggml_nelements(src0) / 2 + max_wg_size - 1) / max_wg_size;
+    uint32_t wg_x = wg_x_calc(ggml_nelements(src0) / 2, max_wg_size);
     return ggml_backend_webgpu_build(ctx, pipeline, params, entries, wg_x);
 }
 
@@ -1234,7 +1239,7 @@ static webgpu_command ggml_webgpu_glu(webgpu_context & ctx, ggml_tensor * src0, 
 
     webgpu_pipeline pipeline    = ctx->glu_pipelines[ggml_get_glu_op(dst)][dst->type][split];
     size_t          max_wg_size = ctx->max_wg_size_x;
-    uint32_t        wg_x        = (ggml_nelements(dst) + max_wg_size - 1) / max_wg_size;
+    uint32_t wg_x = wg_x_calc(ggml_nelements(dst), max_wg_size);
     return ggml_backend_webgpu_build(ctx, pipeline, params, entries, wg_x);
 }
 
@@ -1272,7 +1277,7 @@ static webgpu_command ggml_webgpu_scale(webgpu_context & ctx, ggml_tensor * src,
     }
 
     size_t   max_wg_size = ctx->max_wg_size_x;
-    uint32_t wg_x        = (ggml_nelements(dst) + max_wg_size - 1) / max_wg_size;
+    uint32_t wg_x = wg_x_calc(ggml_nelements(dst), max_wg_size);
     return ggml_backend_webgpu_build(ctx, ctx->scale_pipelines[inplace], params, entries, wg_x);
 }
 
