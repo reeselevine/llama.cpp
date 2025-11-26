@@ -63,7 +63,7 @@
   {
     "SHADER_SUFFIX": "q4_0_f32",
     "REPLS": {
-      "SRC0_TYPE" : "f16",
+      "SRC0_TYPE" : "u32",
       "SRC1_TYPE" : "f32",
       "DST_TYPE": "f32",
       "VEC_SIZE" : 1,
@@ -117,29 +117,29 @@ fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
 
 const BLOCK_SIZE = 32;
 const NQ = 16u; // number of weights per thread
-const F16_PER_BLOCK = 9u; // 1 scale + 8x4 packed weights
-const WEIGHTS_PER_F16 = 4u; // 4 weights per f16
-const F16_PER_THREAD = NQ / WEIGHTS_PER_F16;
+const U32_PER_BLOCK = 5u;
+const WEIGHTS_PER_U32 = 8u; 
+const F16_PER_THREAD = NQ / WEIGHTS_PER_U32;
 
 fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
     var local_sum = 0.0;
     for (var i = tig * NQ; i < tile_size; i += THREADS_PER_OUTPUT * NQ) {
         let blck_idx = i / BLOCK_SIZE;
-        let block_offset = (i % BLOCK_SIZE) / WEIGHTS_PER_F16;
-        let scale_idx = (idx_base + k_outer / BLOCK_SIZE + blck_idx) * F16_PER_BLOCK;
+        let block_offset = (i % BLOCK_SIZE) / WEIGHTS_PER_U32;
+        let scale_idx = (idx_base + k_outer / BLOCK_SIZE + blck_idx) * U32_PER_BLOCK;
         // each f16 contains offsets [block_offset, block_offset + 1] and [block_offset + 16, block_offset + 17]
-        let shmem_idx = blck_idx * BLOCK_SIZE + block_offset * 2u;
+        let shmem_idx = blck_idx * BLOCK_SIZE + block_offset * 4u;
+        
         let d = f32(src0[scale_idx]);
-        for (var j = 0u; j < F16_PER_THREAD; j += 2) {
-            let q_0 = src0[scale_idx + 1 + block_offset + j];
-            let q_1 = src0[scale_idx + 1 + block_offset + j + 1];
-            let q_packed = bitcast<u32>(vec2(q_0, q_1));
+        for (var j = 0u; j < U32_PER_THREAD; j++) {
+            let q_packed = src0[scale_idx + 1u + block_offset + j];
             for (var k: u32 = 0; k < 4; k++) {
                 let q_byte = get_byte(q_packed, k);
                 let q_hi = (f32((q_byte >> 4) & 0xF) - 8.0) * d;
                 let q_lo = (f32(q_byte & 0xF) - 8.0) * d;
-                local_sum += q_lo * shared_vector[shmem_idx + j * 2 + k];
-                local_sum += q_hi * shared_vector[shmem_idx + j * 2 + k + 16];
+
+                local_sum += q_lo * shared_vector[shmem_idx + j * 8u + 2 * k];
+                local_sum += q_hi * shared_vector[shmem_idx + j * 8u + 2 * k + 1u];
             }
         }
     }

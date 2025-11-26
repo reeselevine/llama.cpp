@@ -69,10 +69,10 @@
   {
     "SHADER_SUFFIX": "q4_0_f32_vec",
     "REPLS": {
-      "SRC0_TYPE" : "f16",
+      "SRC0_TYPE" : "u32",
       "SRC1_TYPE" : "vec4<f32>",
       "DST_TYPE" : "vec4<f32>",
-      "SHMEM_TYPE" : "vec4<f16>",
+      "SHMEM_TYPE" : "vec4<f32>",
       "VEC_SIZE" : 4,
     },
     "DECLS": ["BYTE_HELPERS", "VEC", "SHMEM_VEC", "INIT_SRC0_SHMEM_Q4_0", "INIT_SRC1_SHMEM"]
@@ -80,10 +80,10 @@
   {
     "SHADER_SUFFIX": "q4_0_f32",
     "REPLS": {
-      "SRC0_TYPE" : "f16",
+      "SRC0_TYPE" : "u32",
       "SRC1_TYPE" : "f32",
       "DST_TYPE" : "f32",
-      "SHMEM_TYPE" : "f16",
+      "SHMEM_TYPE" : "u32",
       "VEC_SIZE" : 1,
     },
     "DECLS": ["BYTE_HELPERS", "SCALAR", "SHMEM_SCALAR", "INIT_SRC0_SHMEM_Q4_0", "INIT_SRC1_SHMEM"]
@@ -157,7 +157,7 @@ override TOTAL_WORKGROUP_SIZE = WORKGROUP_SIZE_M * WORKGROUP_SIZE_N;
 override TILE_SRC0_SHMEM = TILE_K * WORKGROUP_SIZE_M * TILE_M;
 override TILE_SRC1_SHMEM = TILE_K * WORKGROUP_SIZE_N * TILE_N;
 
-var<workgroup> shmem: array<f16, TILE_SRC0_SHMEM + TILE_SRC1_SHMEM>;
+var<workgroup> shmem: array<u32, TILE_SRC0_SHMEM + TILE_SRC1_SHMEM>;
 
 @compute @workgroup_size(TOTAL_WORKGROUP_SIZE)
 fn main(@builtin(workgroup_id) wg_id: vec3<u32>,

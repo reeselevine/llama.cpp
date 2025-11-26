@@ -1,5 +1,5 @@
 #decl(SHMEM_VEC)
-fn store_shmem(val: vec4<f16>, idx: u32) {
+fn store_shmem(val: vec4<u32>, idx: u32) {
     shmem[idx] = val.x;
     shmem[idx + 1] = val.y;
     shmem[idx + 2] = val.z;
@@ -9,7 +9,11 @@ fn store_shmem(val: vec4<f16>, idx: u32) {
 
 #decl(SHMEM_SCALAR)
 fn store_shmem(val: f16, idx: u32) {
-    shmem[idx] = val;
+    shmem[idx] = val;  // Convert f16 to u32 before storing
+}
+
+fn store_shmem(val: u32, idx: u32) {
+    shmem[idx] = val;  // Directly store u32 in shmem
 }
 #enddecl(SHMEM_SCALAR)
 
@@ -53,19 +57,24 @@ fn init_shmem_src1(thread_id: u32, batch_offset: u32, offset_n: u32, k_outer: u3
 
 #decl(INIT_SRC0_SHMEM_Q4_0)
 
-const BLOCK_SIZE = 32u;
-// the number of blocks per k-tile. Note that this currently only works if TILE_K is a multiple of BLOCK_SIZE, which may need to be rethought for larger quantized types.
-override BLOCKS_K = TILE_K/BLOCK_SIZE;
-const NQ = 16u;
-const F16_PER_BLOCK = 9u; // 1 scale + 8x4 packed weights
-const WEIGHTS_PER_F16 = 4u; // 4 weights per f16
-const F16_PER_THREAD = NQ / WEIGHTS_PER_F16;
+const BLOCK_SIZE = 32u; // block of 32 weights for quantization, will share the same scale
+override BLOCKS_K = TILE_K/BLOCK_SIZE; // the number of blocks per k-tile. Note that this currently only works if TILE_K is a multiple of BLOCK_SIZE, which may need to be rethought for larger quantized types.
+const NQ = 16u; // each thread process 16 quantized values
+
+// 32 weights per block * 4 bits per weight = 128 bits to store all
+// 128 bits / 32 bits (u32) = 4 u32s + 1 for scale = 5
+// scale is technically still stored as an f16 inside of a u32
+const U32_PER_BLOCK = 5;
+
+const WEIGHTS_PER_U32 = 8u; // 8 weights per u32
+const U32_PER_THREAD = NQ / WEIGHTS_PER_U32;
 
 fn init_shmem_src0(thread_id: u32, batch_offset: u32, offset_m: u32, k_outer: u32) {
     for (var i = thread_id * NQ; i < TILE_SRC0_SHMEM; i += TOTAL_WORKGROUP_SIZE * NQ) {
-        let blck_idx = i / BLOCK_SIZE;
-        let block_offset = (i % BLOCK_SIZE) / WEIGHTS_PER_F16;
-        let shmem_idx = blck_idx * BLOCK_SIZE + block_offset * 2u;
+        
+        let blck_idx = i / BLOCK_SIZE; // which block the current quantized element is in
+        let block_offset = (i % BLOCK_SIZE) / WEIGHTS_PER_U32; // which quantized weight in the block 
+        let shmem_idx = blck_idx * BLOCK_SIZE + block_offset * 4u; // each u32 is 4 bytes so multiply by 4u
 
         let tile_m = blck_idx / BLOCKS_K;
         let global_m = offset_m + tile_m;
@@ -74,20 +83,29 @@ fn init_shmem_src0(thread_id: u32, batch_offset: u32, offset_m: u32, k_outer: u3
 
         if (global_m < params.m && global_k < params.k / BLOCK_SIZE) {
             let src0_idx = batch_offset + global_m * params.stride_01 + global_k;
-            let scale_idx = src0_idx * F16_PER_BLOCK;
-            let d = src0[scale_idx];
+            let scale_idx = src0_idx * U32_PER_BLOCK;
 
-            for (var j = 0u; j < F16_PER_THREAD; j += 2) {
-                let q_0 = src0[scale_idx + 1u + block_offset + j];
-                let q_1 = src0[scale_idx + 1u + block_offset + j + 1];
+            // scale is still technically an f16 stored in a u32 so we need to grab it 
+            let scale_u32 = src0[scale_idx];
+            let d = f16(scale_u32 & 0xFFFFu);  // Extract the lower 16 bits and convert to f16
 
-                let q_packed = bitcast<u32>(vec2(q_0, q_1));
+
+            for (var j = 0u; j < U32_PER_THREAD; j++) {
+
+                // directly get the packed version from u32
+                let q_packed = src0[scale_idx + 1u + block_offset + j];
+
+                // loop 1 byte (8 bits) at a time
                 for (var k = 0u; k < 4u; k++) {
                     let q_byte = get_byte(q_packed, k);
-                    let q_hi = (f16((q_byte >> 4) & 0xF) - 8.0) * d;
-                    let q_lo = (f16(q_byte & 0xF) - 8.0) * d;
-                    shmem[shmem_idx + j * 2 + k] = q_lo;
-                    shmem[shmem_idx + j * 2 + k + 16u] = q_hi;
+                    
+                    // Unpack the high nibble (4 bits) and low nibble (4 bits)
+                    let q_hi = (f16((q_byte >> 4) & 0xFu) - 8.0) * d;  // higher 4 bits, scaled
+                    let q_lo = (f16(q_byte & 0xFu) - 8.0) * d;         // lower 4 bits, scaled
+
+                    // Store the unpacked and scaled values in shared memory
+                    shmem[shmem_idx + j * 8u + 2 * k] = q_lo;    // Store the low nibble quantized weight
+                    shmem[shmem_idx + j * 8u + 2 * k + 1u] = q_hi;
                 }
             }
         }
