@@ -313,10 +313,10 @@ struct webgpu_context_struct {
 
     uint32_t max_subgroup_size;
 
-#ifndef __EMSCRIPTEN__
     bool                       supports_subgroup_matrix = false;
-    wgpu::SubgroupMatrixConfig subgroup_matrix_config;
-#endif
+    uint32_t                   sg_mat_m;
+    uint32_t                   sg_mat_n;
+    uint32_t                   sg_mat_k;
 
     std::recursive_mutex mutex;
     std::atomic_uint     inflight_threads = 0;
@@ -1007,10 +1007,10 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
             if (ctx->supports_subgroup_matrix) {
                 // The total number of subgroups/workgroups needed per matrix.
                 uint32_t wg_m_sg_tile =
-                    WEBGPU_MUL_MAT_SUBGROUP_M * WEBGPU_MUL_MAT_SUBGROUP_MATRIX_M * ctx->subgroup_matrix_config.M;
+                    WEBGPU_MUL_MAT_SUBGROUP_M * WEBGPU_MUL_MAT_SUBGROUP_MATRIX_M * ctx->sg_mat_m;
                 wg_m = CEIL_DIV(dst->ne[0], wg_m_sg_tile);
                 uint32_t wg_n_sg_tile =
-                    WEBGPU_MUL_MAT_SUBGROUP_N * WEBGPU_MUL_MAT_SUBGROUP_MATRIX_N * ctx->subgroup_matrix_config.N;
+                    WEBGPU_MUL_MAT_SUBGROUP_N * WEBGPU_MUL_MAT_SUBGROUP_MATRIX_N * ctx->sg_mat_n;
                 wg_n = CEIL_DIV(dst->ne[1], wg_n_sg_tile);
             } else {
 #endif
@@ -1095,7 +1095,7 @@ static webgpu_command ggml_webgpu_flash_attn(webgpu_context & ctx,
          .offset  = ggml_webgpu_tensor_align_offset(ctx, V),
          .size    = ggml_webgpu_tensor_binding_size(ctx, V) }
     };
-    uint binding_index = 3;
+    uint32_t binding_index = 3;
     if (has_mask) {
         entries.push_back({ .binding = binding_index++,
                             .buffer  = ggml_webgpu_tensor_buf(mask),
@@ -1144,9 +1144,9 @@ static webgpu_command ggml_webgpu_flash_attn(webgpu_context & ctx,
                                                                          .has_mask           = mask != nullptr,
                                                                          .has_sinks          = sinks != nullptr,
                                                                          .uses_logit_softcap = logit_softcap != 0.0f,
-                                                                         .sg_mat_m = ctx->subgroup_matrix_config.M,
-                                                                         .sg_mat_n = ctx->subgroup_matrix_config.N,
-                                                                         .sg_mat_k = ctx->subgroup_matrix_config.K,
+                                                                         .sg_mat_m = ctx->sg_mat_m,
+                                                                         .sg_mat_n = ctx->sg_mat_n,
+                                                                         .sg_mat_k = ctx->sg_mat_k,
                                                                          .wg_mem_limit_bytes =
                                                                              ctx->limits.maxComputeWorkgroupStorageSize,
                                                                          .max_subgroup_size = ctx->max_subgroup_size };
@@ -1996,9 +1996,9 @@ static void ggml_webgpu_init_mul_mat_pipeline(webgpu_context & webgpu_ctx) {
         sg_matrix_repls["WEBGPU_SUBGROUP_N"]        = std::to_string(WEBGPU_MUL_MAT_SUBGROUP_N);
         sg_matrix_repls["WEBGPU_SUBGROUP_MATRIX_M"] = std::to_string(WEBGPU_MUL_MAT_SUBGROUP_MATRIX_M);
         sg_matrix_repls["WEBGPU_SUBGROUP_MATRIX_N"] = std::to_string(WEBGPU_MUL_MAT_SUBGROUP_MATRIX_N);
-        sg_matrix_repls["WEBGPU_SG_MAT_M_SIZE"]     = std::to_string(webgpu_ctx->subgroup_matrix_config.M);
-        sg_matrix_repls["WEBGPU_SG_MAT_N_SIZE"]     = std::to_string(webgpu_ctx->subgroup_matrix_config.N);
-        sg_matrix_repls["WEBGPU_SG_MAT_K_SIZE"]     = std::to_string(webgpu_ctx->subgroup_matrix_config.K);
+        sg_matrix_repls["WEBGPU_SG_MAT_M_SIZE"]     = std::to_string(webgpu_ctx->sg_mat_m);
+        sg_matrix_repls["WEBGPU_SG_MAT_N_SIZE"]     = std::to_string(webgpu_ctx->sg_mat_n);
+        sg_matrix_repls["WEBGPU_SG_MAT_K_SIZE"]     = std::to_string(webgpu_ctx->sg_mat_k);
 
         proc_mul_mat_f32_f32 = ggml_webgpu_process_shader_repls(wgsl_mul_mat_subgroup_matrix_f32_f32, sg_matrix_repls);
         proc_mul_mat_f32_f32_vec =
@@ -2670,7 +2670,7 @@ static bool ggml_backend_webgpu_device_supports_op(ggml_backend_dev_t dev, const
                 size_t       limit_bytes = webgpu_ctx->limits.maxComputeWorkgroupStorageSize;
                 const bool   has_mask    = op->src[3] != nullptr;
                 const size_t min_bytes   = ggml_webgpu_flash_attn_wg_mem_bytes(
-                    webgpu_ctx->subgroup_matrix_config.M, webgpu_ctx->subgroup_matrix_config.N, (uint32_t) src0->ne[0],
+                    webgpu_ctx->sg_mat_m, webgpu_ctx->sg_mat_n, (uint32_t) src0->ne[0],
                     (uint32_t) src2->ne[0], has_mask);
                 if (min_bytes > limit_bytes) {
                     break;
@@ -2857,7 +2857,9 @@ static ggml_backend_dev_t ggml_backend_webgpu_reg_get_device(ggml_backend_reg_t 
             if (config.M == config.N && config.N == config.K && (config.K == 8 || config.K == 16) &&
                 config.componentType == wgpu::SubgroupMatrixComponentType::F16 &&
                 config.resultComponentType == wgpu::SubgroupMatrixComponentType::F16) {
-                ctx->subgroup_matrix_config  = config;
+                ctx->sg_mat_m  = config.M;
+                ctx->sg_mat_n  = config.N;
+                ctx->sg_mat_k  = config.K;
                 valid_subgroup_matrix_config = true;
                 break;
             }
