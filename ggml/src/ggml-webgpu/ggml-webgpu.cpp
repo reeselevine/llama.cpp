@@ -759,11 +759,6 @@ static void ggml_backend_webgpu_free(ggml_backend_t backend) {
 #if !defined(GGML_WEBGPU_CPU_PROFILE) && !defined(GGML_WEBGPU_GPU_PROFILE)
     GGML_UNUSED(ctx);
 #endif
-
-    for (auto & kv : ctx->webgpu_ctx->flash_attn_pipelines) {
-        delete static_cast<ggml_webgpu_flash_attn_shader_decisions *>(kv.second.context);
-        kv.second.context = nullptr;
-    }
 }
 
 static size_t ggml_webgpu_tensor_offset(const ggml_tensor * tensor) {
@@ -1058,8 +1053,6 @@ static webgpu_command ggml_webgpu_flash_attn(webgpu_context & ctx,
         has_mask ? (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, mask) / ggml_type_size(mask->type)) : 0,
         has_sinks ? (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, sinks) / ggml_type_size(sinks->type)) : 0,
         (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, dst) / ggml_type_size(dst->type)),
-        (uint32_t) Q->ne[0],                              // head dimension (Q/K)
-        (uint32_t) V->ne[0],                              // head dimension (V)
         (uint32_t) Q->ne[2],                              // number of heads
         (uint32_t) Q->ne[1],                              // sequence length (Q)
         (uint32_t) K->ne[1],                              // sequence length (K/V)
@@ -2674,9 +2667,13 @@ static bool ggml_backend_webgpu_device_supports_op(ggml_backend_dev_t dev, const
                 // Head dimensions must fit in workgroup memory with minimum tile sizes
                 size_t       limit_bytes = webgpu_ctx->limits.maxComputeWorkgroupStorageSize;
                 const bool   has_mask    = op->src[3] != nullptr;
+                const bool   kv_direct   = src1->type == GGML_TYPE_F16 &&
+                                           (src0->ne[0] % webgpu_ctx->sg_mat_k) == 0 &&
+                                           (src1->ne[1] % webgpu_ctx->sg_mat_n) == 0;
                 const size_t min_bytes =
                     ggml_webgpu_flash_attn_wg_mem_bytes(webgpu_ctx->sg_mat_m, webgpu_ctx->sg_mat_n,
-                                                        (uint32_t) src0->ne[0], (uint32_t) src2->ne[0], has_mask);
+                                                        (uint32_t) src0->ne[0], (uint32_t) src2->ne[0], has_mask,
+                                                        kv_direct);
                 if (min_bytes > limit_bytes) {
                     break;
                 }

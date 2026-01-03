@@ -61,8 +61,6 @@ struct Params {
     offset_dst: u32,
 
     // shapes of Q/K/V
-    head_dim_qk: u32,
-    head_dim_v: u32,
     n_heads: u32,
     seq_len_q: u32,
     seq_len_kv: u32,
@@ -160,6 +158,7 @@ fn calc_softmax_term(kv_idx: u32, q_tile_row: u32, slope: f16) -> f16 {
 
 // Q_TILE is assumed to match SG_MAT_M, so we process a single Q block per workgroup.
 // Number of subgroup-matrix-width blocks that span the KV tile. SG_MAT_N must divide KV_TILE.
+// TODO: if this can be used instead of valid_kv_blocks, performance increases
 const KV_BLOCKS = KV_TILE / SG_MAT_N;
 
 @compute @workgroup_size(WG_SIZE)
@@ -179,7 +178,7 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
     let wg_per_head = (params.seq_len_q + Q_TILE - 1u) / Q_TILE;
     let wg_per_batch = wg_per_head * params.n_heads;
 
-    let dst2_stride = params.head_dim_v * params.n_heads;
+    let dst2_stride = HEAD_DIM_V * params.n_heads;
     let dst3_stride = dst2_stride * params.seq_len_q;
 
     // batch index
@@ -208,34 +207,34 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
 #endif
 
     // note that the output is permuted, the layout is [head_dim_v, n_heads, seq_len_q, batch_size]
-    let dst_global_offset = dst_batch_offset + q_row_start * dst2_stride + head_idx * params.head_dim_v;
+    let dst_global_offset = dst_batch_offset + q_row_start * dst2_stride + head_idx * HEAD_DIM_V;
 
     let head = f32(head_idx);
     let slope = f16(select(1.0, select(pow(params.m1, 2.0 * (head - params.n_head_log2) + 1.0), pow(params.m0, head + 1.0), head < params.n_head_log2), params.max_bias > 0));
 
     // load q tile into shared memory
-    for (var elem_idx = local_id.x; elem_idx < Q_TILE * params.head_dim_qk; elem_idx += WG_SIZE) {
-        let q_row = elem_idx / params.head_dim_qk;
-        let q_col = elem_idx % params.head_dim_qk;
+    for (var elem_idx = local_id.x; elem_idx < Q_TILE * HEAD_DIM_QK; elem_idx += WG_SIZE) {
+        let q_row = elem_idx / HEAD_DIM_QK;
+        let q_col = elem_idx % HEAD_DIM_QK;
         let head_q_row = q_row_start + q_row;
         let global_q_row_offset = q_head_offset + head_q_row * params.stride_q1;
         q_shmem[elem_idx] = f16(select(
             0.0,
             Q[global_q_row_offset + q_col],
-            head_q_row < params.seq_len_q && q_col < params.head_dim_qk));
+            head_q_row < params.seq_len_q && q_col < HEAD_DIM_QK));
     }
 
     for (var kv_tile = 0u; kv_tile < params.seq_len_kv; kv_tile += KV_TILE) {
 
       // load k tile into shared memory
 #if defined(KV_Q4_0)
-      for (var elem_idx = local_id.x * NQ; elem_idx < KV_TILE * params.head_dim_qk; elem_idx += WG_SIZE * NQ) {
+      for (var elem_idx = local_id.x * NQ; elem_idx < KV_TILE * HEAD_DIM_QK; elem_idx += WG_SIZE * NQ) {
           let blck_idx = elem_idx / BLOCK_SIZE;
           let block_offset = (elem_idx % BLOCK_SIZE) / WEIGHTS_PER_F16;
           let k_row = blck_idx / BLOCKS_K;
           let global_k_row = kv_tile + k_row;
           let block_k = blck_idx % BLOCKS_K;
-          let row_offset = k_row * params.head_dim_qk;
+          let row_offset = k_row * HEAD_DIM_QK;
 
           if (global_k_row < params.seq_len_kv) {
               let global_block_idx = k_head_offset + global_k_row * params.stride_k1 + block_k;
@@ -257,13 +256,13 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
           }
       }
 #elif defined(KV_Q8_0)
-      for (var elem_idx = local_id.x * NQ; elem_idx < KV_TILE * params.head_dim_qk; elem_idx += WG_SIZE * NQ) {
+      for (var elem_idx = local_id.x * NQ; elem_idx < KV_TILE * HEAD_DIM_QK; elem_idx += WG_SIZE * NQ) {
           let blck_idx = elem_idx / BLOCK_SIZE;
           let block_offset = (elem_idx % BLOCK_SIZE) / WEIGHTS_PER_F16;
           let k_row = blck_idx / BLOCKS_K;
           let global_k_row = kv_tile + k_row;
           let block_k = blck_idx % BLOCKS_K;
-          let row_offset = k_row * params.head_dim_qk;
+          let row_offset = k_row * HEAD_DIM_QK;
 
           if (global_k_row < params.seq_len_kv) {
               let global_block_idx = k_head_offset + global_k_row * params.stride_k1 + block_k;
@@ -285,15 +284,15 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
 #elif defined(KV_DIRECT)
       // Direct global loads for KV
 #else
-      for (var elem_idx = local_id.x; elem_idx < KV_TILE * params.head_dim_qk; elem_idx += WG_SIZE) {
-          let k_row = elem_idx / params.head_dim_qk;
-          let k_col = elem_idx % params.head_dim_qk;
+      for (var elem_idx = local_id.x; elem_idx < KV_TILE * HEAD_DIM_QK; elem_idx += WG_SIZE) {
+          let k_row = elem_idx / HEAD_DIM_QK;
+          let k_col = elem_idx % HEAD_DIM_QK;
           let global_k_row = kv_tile + k_row;
           let global_k_row_offset = k_head_offset + global_k_row * params.stride_k1;
           kv_shmem[elem_idx] = f16(select(
               0.0,
               K[global_k_row_offset + k_col],
-              global_k_row < params.seq_len_kv && k_col < params.head_dim_qk));
+              global_k_row < params.seq_len_kv && k_col < HEAD_DIM_QK));
       }
 #endif
 
@@ -307,25 +306,30 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
       let valid_kv_blocks = tile_kv / SG_MAT_N;
 
       // accumulate q block * k block into registers across the entire KV tile
+      // TODO: this loop seems to be the current largest bottleneck
       for (var kv_block = subgroup_id; kv_block < valid_kv_blocks; kv_block += num_subgroups) {
           var acc: subgroup_matrix_result<f16, SG_MAT_M, SG_MAT_N>;
-          let k_block_offset = kv_block * SG_MAT_N * params.head_dim_qk;
-          for (var head_dim_block = 0u; head_dim_block < params.head_dim_qk; head_dim_block += SG_MAT_K) {
+#ifdef KV_DIRECT
+          let k_block_row = kv_tile + kv_block * SG_MAT_N;
+          let k_global_offset = k_head_offset + k_block_row * params.stride_k1;
+#else
+          let k_block_offset = kv_block * SG_MAT_N * HEAD_DIM_QK;
+#endif
+          let inter_offset = kv_block * SG_MAT_N;
+          for (var head_dim_block = 0u; head_dim_block < HEAD_DIM_QK; head_dim_block += SG_MAT_K) {
               // load q submatrix from shared memory
               var q_sg_mat: subgroup_matrix_left<f16, SG_MAT_M, SG_MAT_K> = subgroupMatrixLoad<subgroup_matrix_left<f16, SG_MAT_M, SG_MAT_K>>(
                   &q_shmem,
                   head_dim_block,
                   false,
-                  params.head_dim_qk
+                  HEAD_DIM_QK
               );
 
                   // load k submatrix from device or shared memory
 #ifdef KV_DIRECT
-                  let k_block_row = kv_tile + kv_block * SG_MAT_N;
-                  let k_global_offset = k_head_offset + k_block_row * params.stride_k1 + head_dim_block;
                   var k_sg_mat: subgroup_matrix_right<f16, SG_MAT_K, SG_MAT_N> = subgroupMatrixLoad<subgroup_matrix_right<f16, SG_MAT_K, SG_MAT_N>>(
                       &K,
-                      k_global_offset,
+                      k_global_offset + head_dim_block,
                       true,
                       params.stride_k1
                   );
@@ -334,15 +338,13 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
                       &kv_shmem,
                       k_block_offset + head_dim_block,
                       true,
-                      params.head_dim_qk
+                      HEAD_DIM_QK
                   );
 #endif
-
               acc = subgroupMatrixMultiplyAccumulate(q_sg_mat, k_sg_mat, acc);
           }
 
           // store acc to shared memory for softmax (S matrix from paper)
-          let inter_offset = kv_block * SG_MAT_N;
           subgroupMatrixStore(&inter_shmem, inter_offset, acc, false, KV_TILE);
       }
 
@@ -365,18 +367,13 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
 
       // online softmax
       for (var q_tile_row = subgroup_id; q_tile_row < Q_TILE; q_tile_row += num_subgroups) {
-          var row_iter = q_tile_row / num_subgroups;
-
           let global_q_row = q_row_start + q_tile_row;
           if (global_q_row >= params.seq_len_q) {
               break;
           }
 
           // initialize running max for this row
-          // only the first thread in the subgroup needs to read from shared memory.
-          // TODO: is this faster than having all threads read shared memory?
-          var prev_max = select(0.0, row_max_shmem[q_tile_row], sg_inv_id == 0);
-          prev_max = subgroupBroadcastFirst(prev_max);
+          var prev_max = row_max_shmem[q_tile_row];
           var final_max = prev_max;
           // pass 1: compute final max across the full KV tile in chunks
           for (var kv_offset = 0u; kv_offset < KV_TILE; kv_offset += subgroup_size) {
@@ -384,7 +381,6 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
               let softmax_term = calc_softmax_term(kv_idx, q_tile_row, slope);
               final_max = subgroupMax(max(final_max, softmax_term));
           }
-
 
           var total_exp_term: f16 = 0.0;
           // pass 2: compute exp sum and write P using final_max
@@ -407,21 +403,21 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
               exp_sum_shmem[q_tile_row] = exp_sum_shmem[q_tile_row] * cur_exp + total_exp_term;
           }
 
-          for (var elem_idx = sg_inv_id; elem_idx < params.head_dim_v; elem_idx += subgroup_size) {
-              let idx = q_tile_row * params.head_dim_v + elem_idx;
+          for (var elem_idx = sg_inv_id; elem_idx < HEAD_DIM_V; elem_idx += subgroup_size) {
+              let idx = q_tile_row * HEAD_DIM_V + elem_idx;
               o_shmem[idx] *= cur_exp;
           }
       }
 
       // load v tile into shared memory
 #if defined(KV_Q4_0)
-      for (var elem_idx = local_id.x * NQ; elem_idx < KV_TILE * params.head_dim_v; elem_idx += WG_SIZE * NQ) {
+      for (var elem_idx = local_id.x * NQ; elem_idx < KV_TILE * HEAD_DIM_V; elem_idx += WG_SIZE * NQ) {
           let blck_idx = elem_idx / BLOCK_SIZE;
           let block_offset = (elem_idx % BLOCK_SIZE) / WEIGHTS_PER_F16;
           let v_row = blck_idx / BLOCKS_V;
           let global_v_row = kv_tile + v_row;
           let block_k = blck_idx % BLOCKS_V;
-          let row_offset = v_row * params.head_dim_v;
+          let row_offset = v_row * HEAD_DIM_V;
 
           if (global_v_row < params.seq_len_kv) {
               let global_block_idx = v_head_offset + global_v_row * params.stride_v1 + block_k;
@@ -443,13 +439,13 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
           }
       }
 #elif defined(KV_Q8_0)
-      for (var elem_idx = local_id.x * NQ; elem_idx < KV_TILE * params.head_dim_v; elem_idx += WG_SIZE * NQ) {
+      for (var elem_idx = local_id.x * NQ; elem_idx < KV_TILE * HEAD_DIM_V; elem_idx += WG_SIZE * NQ) {
           let blck_idx = elem_idx / BLOCK_SIZE;
           let block_offset = (elem_idx % BLOCK_SIZE) / WEIGHTS_PER_F16;
           let v_row = blck_idx / BLOCKS_V;
           let global_v_row = kv_tile + v_row;
           let block_k = blck_idx % BLOCKS_V;
-          let row_offset = v_row * params.head_dim_v;
+          let row_offset = v_row * HEAD_DIM_V;
 
           if (global_v_row < params.seq_len_kv) {
               let global_block_idx = v_head_offset + global_v_row * params.stride_v1 + block_k;
@@ -471,15 +467,15 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
 #elif defined(KV_DIRECT)
       // Direct global loads for KV
 #else
-      for (var elem_idx = local_id.x; elem_idx < KV_TILE * params.head_dim_v; elem_idx += WG_SIZE) {
-          let v_row = elem_idx / params.head_dim_v;
-          let v_col = elem_idx % params.head_dim_v;
+      for (var elem_idx = local_id.x; elem_idx < KV_TILE * HEAD_DIM_V; elem_idx += WG_SIZE) {
+          let v_row = elem_idx / HEAD_DIM_V;
+          let v_col = elem_idx % HEAD_DIM_V;
           let global_v_row = kv_tile + v_row;
           let global_v_row_offset = v_head_offset + global_v_row * params.stride_v1;
           kv_shmem[elem_idx] = f16(select(
               0.0,
               V[global_v_row_offset + v_col],
-              global_v_row < params.seq_len_kv && v_col < params.head_dim_v));
+              global_v_row < params.seq_len_kv && v_col < HEAD_DIM_V));
       }
 #endif
 
@@ -488,17 +484,16 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
       // we have P (Q_TILE x KV_TILE) in inter_shmem and V (KV_TILE x head_dim_v) in kv_shmem
       // we want to compute O += P * V across the full KV tile
       for (var head_dim_block = subgroup_id * SG_MAT_N;
-           head_dim_block < params.head_dim_v;
+           head_dim_block < HEAD_DIM_V;
            head_dim_block += num_subgroups * SG_MAT_N) {
               // load O submatrix from shared memory
               var o_sg_mat: subgroup_matrix_result<f16, SG_MAT_M, SG_MAT_N> = subgroupMatrixLoad<subgroup_matrix_result<f16, SG_MAT_M, SG_MAT_N>>(
                   &o_shmem,
                   head_dim_block,
                   false,
-                  params.head_dim_v
+                  HEAD_DIM_V
               );
 
-              //for (var kv_block = 0u; kv_block < KV_BLOCKS; kv_block++) {
               for (var kv_block = 0u; kv_block < valid_kv_blocks; kv_block++) {
                   let p_offset = kv_block * SG_MAT_N;
                   var p_sg_mat: subgroup_matrix_left<f16, SG_MAT_M, SG_MAT_K> = subgroupMatrixLoad<subgroup_matrix_left<f16, SG_MAT_M, SG_MAT_K>>(
@@ -519,12 +514,12 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
                       params.stride_v1
                   );
 #else
-                  let v_block_offset = kv_block * SG_MAT_N * params.head_dim_v;
+                  let v_block_offset = kv_block * SG_MAT_N * HEAD_DIM_V;
                   var v_sg_mat: subgroup_matrix_right<f16, SG_MAT_K, SG_MAT_N> = subgroupMatrixLoad<subgroup_matrix_right<f16, SG_MAT_K, SG_MAT_N>>(
                       &kv_shmem,
                       v_block_offset + head_dim_block,
                       false,
-                      params.head_dim_v
+                      HEAD_DIM_V
                   );
 #endif
 
@@ -533,7 +528,7 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
               }
 
               // store O back to shared memory
-              subgroupMatrixStore(&o_shmem, head_dim_block, o_sg_mat, false, params.head_dim_v);
+              subgroupMatrixStore(&o_shmem, head_dim_block, o_sg_mat, false, HEAD_DIM_V);
       }
 
       workgroupBarrier();
@@ -550,8 +545,7 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
                 break;
             }
 
-            var prev_max = select(0.0, row_max_shmem[q_tile_row], sg_inv_id == 0);
-            prev_max = subgroupBroadcastFirst(prev_max);
+            var prev_max = row_max_shmem[q_tile_row];
 
             // for non-sink threads, exp(-65504) effectively zeroes out their contribution to the sum
             let sink_val = select(FLOAT_MIN, f16(sinks[params.offset_sinks + head_idx]), sg_inv_id == 0);
@@ -565,8 +559,8 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
                 exp_sum_shmem[q_tile_row] = exp_sum_shmem[q_tile_row] * max_exp + sink_exp_sum;
             }
 
-            for (var elem_idx = sg_inv_id; elem_idx < params.head_dim_v; elem_idx += subgroup_size) {
-                let idx = q_tile_row * params.head_dim_v + elem_idx;
+            for (var elem_idx = sg_inv_id; elem_idx < HEAD_DIM_V; elem_idx += subgroup_size) {
+                let idx = q_tile_row * HEAD_DIM_V + elem_idx;
                 let val = o_shmem[idx] * max_exp;
                 o_shmem[idx] = val;
             }
@@ -584,13 +578,11 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
                 break;
             }
 
-            var exp_sum = select(0.0, exp_sum_shmem[q_tile_row], sg_inv_id == 0);
-            exp_sum = subgroupBroadcastFirst(exp_sum);
-
+            let exp_sum = exp_sum_shmem[q_tile_row];
             let scale = select(0.0, 1.0 / exp_sum, exp_sum != 0);
 
-            for (var elem_idx = sg_inv_id; elem_idx < params.head_dim_v; elem_idx += subgroup_size) {
-                let o_val = o_shmem[q_tile_row * params.head_dim_v + elem_idx];
+            for (var elem_idx = sg_inv_id; elem_idx < HEAD_DIM_V; elem_idx += subgroup_size) {
+                let o_val = o_shmem[q_tile_row * HEAD_DIM_V + elem_idx];
                 let scaled = o_val * scale;
                 dst[dst_global_offset + q_tile_row * dst2_stride + elem_idx] = f32(scaled);
             }
