@@ -272,14 +272,16 @@ struct flash_attn_pipeline_key {
     int      dst_type;
     uint32_t head_dim_qk;
     uint32_t head_dim_v;
+    bool     kv_direct;
     bool     has_mask;
     bool     has_sinks;
     bool     uses_logit_softcap;
 
     bool operator==(const flash_attn_pipeline_key & other) const {
         return q_type == other.q_type && kv_type == other.kv_type && dst_type == other.dst_type &&
-               head_dim_qk == other.head_dim_qk && head_dim_v == other.head_dim_v && has_mask == other.has_mask &&
-               has_sinks == other.has_sinks && uses_logit_softcap == other.uses_logit_softcap;
+               head_dim_qk == other.head_dim_qk && head_dim_v == other.head_dim_v && kv_direct == other.kv_direct &&
+               has_mask == other.has_mask && has_sinks == other.has_sinks &&
+               uses_logit_softcap == other.uses_logit_softcap;
     }
 };
 
@@ -296,6 +298,7 @@ struct flash_attn_pipeline_key_hash {
         ggml_webgpu_hash_combine(seed, key.dst_type);
         ggml_webgpu_hash_combine(seed, key.head_dim_qk);
         ggml_webgpu_hash_combine(seed, key.head_dim_v);
+        ggml_webgpu_hash_combine(seed, key.kv_direct);
         ggml_webgpu_hash_combine(seed, key.has_mask);
         ggml_webgpu_hash_combine(seed, key.has_sinks);
         ggml_webgpu_hash_combine(seed, key.uses_logit_softcap);
@@ -313,10 +316,10 @@ struct webgpu_context_struct {
 
     uint32_t max_subgroup_size;
 
-    bool                       supports_subgroup_matrix = false;
-    uint32_t                   sg_mat_m;
-    uint32_t                   sg_mat_n;
-    uint32_t                   sg_mat_k;
+    bool     supports_subgroup_matrix = false;
+    uint32_t sg_mat_m;
+    uint32_t sg_mat_n;
+    uint32_t sg_mat_k;
 
     std::recursive_mutex mutex;
     std::atomic_uint     inflight_threads = 0;
@@ -1006,12 +1009,10 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
 #ifndef __EMSCRIPTEN__
             if (ctx->supports_subgroup_matrix) {
                 // The total number of subgroups/workgroups needed per matrix.
-                uint32_t wg_m_sg_tile =
-                    WEBGPU_MUL_MAT_SUBGROUP_M * WEBGPU_MUL_MAT_SUBGROUP_MATRIX_M * ctx->sg_mat_m;
-                wg_m = CEIL_DIV(dst->ne[0], wg_m_sg_tile);
-                uint32_t wg_n_sg_tile =
-                    WEBGPU_MUL_MAT_SUBGROUP_N * WEBGPU_MUL_MAT_SUBGROUP_MATRIX_N * ctx->sg_mat_n;
-                wg_n = CEIL_DIV(dst->ne[1], wg_n_sg_tile);
+                uint32_t wg_m_sg_tile = WEBGPU_MUL_MAT_SUBGROUP_M * WEBGPU_MUL_MAT_SUBGROUP_MATRIX_M * ctx->sg_mat_m;
+                wg_m                  = CEIL_DIV(dst->ne[0], wg_m_sg_tile);
+                uint32_t wg_n_sg_tile = WEBGPU_MUL_MAT_SUBGROUP_N * WEBGPU_MUL_MAT_SUBGROUP_MATRIX_N * ctx->sg_mat_n;
+                wg_n                  = CEIL_DIV(dst->ne[1], wg_n_sg_tile);
             } else {
 #endif
                 uint32_t tile_m_s = WEBGPU_MUL_MAT_TILE_M * WEBGPU_MUL_MAT_WG_SIZE_M;
@@ -1113,12 +1114,15 @@ static webgpu_command ggml_webgpu_flash_attn(webgpu_context & ctx,
                         .offset  = ggml_webgpu_tensor_align_offset(ctx, dst),
                         .size    = ggml_webgpu_tensor_binding_size(ctx, dst) });
 
+    bool kv_direct = (K->type == GGML_TYPE_F16) && (Q->ne[0] % ctx->sg_mat_k == 0) && (K->ne[1] % ctx->sg_mat_n == 0);
+
     flash_attn_pipeline_key key = {
         .q_type             = Q->type,
         .kv_type            = K->type,
         .dst_type           = dst->type,
         .head_dim_qk        = (uint32_t) Q->ne[0],
         .head_dim_v         = (uint32_t) V->ne[0],
+        .kv_direct          = kv_direct,
         .has_mask           = mask != nullptr,
         .has_sinks          = sinks != nullptr,
         .uses_logit_softcap = logit_softcap != 0.0f,
@@ -1141,12 +1145,13 @@ static webgpu_command ggml_webgpu_flash_attn(webgpu_context & ctx,
             ggml_webgpu_flash_attn_shader_lib_context shader_lib_ctx = { .kv_type            = K->type,
                                                                          .head_dim_qk        = (uint32_t) Q->ne[0],
                                                                          .head_dim_v         = (uint32_t) V->ne[0],
+                                                                         .kv_direct          = kv_direct,
                                                                          .has_mask           = mask != nullptr,
                                                                          .has_sinks          = sinks != nullptr,
                                                                          .uses_logit_softcap = logit_softcap != 0.0f,
-                                                                         .sg_mat_m = ctx->sg_mat_m,
-                                                                         .sg_mat_n = ctx->sg_mat_n,
-                                                                         .sg_mat_k = ctx->sg_mat_k,
+                                                                         .sg_mat_m           = ctx->sg_mat_m,
+                                                                         .sg_mat_n           = ctx->sg_mat_n,
+                                                                         .sg_mat_k           = ctx->sg_mat_k,
                                                                          .wg_mem_limit_bytes =
                                                                              ctx->limits.maxComputeWorkgroupStorageSize,
                                                                          .max_subgroup_size = ctx->max_subgroup_size };
@@ -2669,9 +2674,9 @@ static bool ggml_backend_webgpu_device_supports_op(ggml_backend_dev_t dev, const
                 // Head dimensions must fit in workgroup memory with minimum tile sizes
                 size_t       limit_bytes = webgpu_ctx->limits.maxComputeWorkgroupStorageSize;
                 const bool   has_mask    = op->src[3] != nullptr;
-                const size_t min_bytes   = ggml_webgpu_flash_attn_wg_mem_bytes(
-                    webgpu_ctx->sg_mat_m, webgpu_ctx->sg_mat_n, (uint32_t) src0->ne[0],
-                    (uint32_t) src2->ne[0], has_mask);
+                const size_t min_bytes =
+                    ggml_webgpu_flash_attn_wg_mem_bytes(webgpu_ctx->sg_mat_m, webgpu_ctx->sg_mat_n,
+                                                        (uint32_t) src0->ne[0], (uint32_t) src2->ne[0], has_mask);
                 if (min_bytes > limit_bytes) {
                     break;
                 }
@@ -2857,9 +2862,9 @@ static ggml_backend_dev_t ggml_backend_webgpu_reg_get_device(ggml_backend_reg_t 
             if (config.M == config.N && config.N == config.K && (config.K == 8 || config.K == 16) &&
                 config.componentType == wgpu::SubgroupMatrixComponentType::F16 &&
                 config.resultComponentType == wgpu::SubgroupMatrixComponentType::F16) {
-                ctx->sg_mat_m  = config.M;
-                ctx->sg_mat_n  = config.N;
-                ctx->sg_mat_k  = config.K;
+                ctx->sg_mat_m                = config.M;
+                ctx->sg_mat_n                = config.N;
+                ctx->sg_mat_k                = config.K;
                 valid_subgroup_matrix_config = true;
                 break;
             }

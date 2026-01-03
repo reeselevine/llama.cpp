@@ -4,20 +4,26 @@ enable f16;
 enable subgroups;
 enable chromium_experimental_subgroup_matrix;
 
-// Default values
+#ifdef KV_F32
 #define KV_TYPE f32
+#else
+#define KV_TYPE f16
+#endif
+
+// Default values
 #define HEAD_DIM_QK 64
 #define HEAD_DIM_V 64
-
-#define Q_TILE 16
-#define KV_TILE 16
-#define WG_SIZE 64
 
 // The number of rows/columns/k in a subgroup matrix. MxK * KxN = MxN
 // Note that the "K" here does not correspond to the K in attention's Q/K/V, it's just the common dimension.
 #define SG_MAT_M 8
 #define SG_MAT_N 8
 #define SG_MAT_K 8
+
+// Each workgroup processes one subgroup matrix of Q rows
+#define Q_TILE SG_MAT_M
+#define KV_TILE 16
+#define WG_SIZE 64
 
 // Quantization constants/helpers
 #define BLOCK_SIZE 32
@@ -37,6 +43,7 @@ enable chromium_experimental_subgroup_matrix;
 #endif
 #define F16_PER_THREAD (NQ / WEIGHTS_PER_F16)
 
+// Ok not to put these in a define block, compiler will remove if unused
 fn get_byte(value: u32, index: u32) -> u32 {
     return (value >> (index * 8)) & 0xFF;
 }
@@ -114,9 +121,11 @@ const FLOAT_MIN: f16 = -65504.0;
 // The number of Q rows processed per workgroup
 var<workgroup> q_shmem: array<f16, Q_TILE * HEAD_DIM_QK>;
 
-// we can reuse the same shmem for K and V since we only need one at a time
+#ifndef KV_DIRECT
 const kv_shmem_size = KV_TILE * max(HEAD_DIM_QK, HEAD_DIM_V);
+// we can reuse the same shmem for K and V since we only need one at a time
 var<workgroup> kv_shmem: array<f16, kv_shmem_size>;
+#endif
 
 var<workgroup> o_shmem: array<f16, Q_TILE * HEAD_DIM_V>; // output shmem
 
@@ -149,8 +158,7 @@ fn calc_softmax_term(kv_idx: u32, q_tile_row: u32, slope: f16) -> f16 {
     return v;
 }
 
-// Number of blocks this workgroup handles at the subgroup matrix level. SG_MAT_M must divide Q_TILE.
-const Q_BLOCKS = Q_TILE / SG_MAT_M;
+// Q_TILE is assumed to match SG_MAT_M, so we process a single Q block per workgroup.
 // Number of subgroup-matrix-width blocks that span the KV tile. SG_MAT_N must divide KV_TILE.
 const KV_BLOCKS = KV_TILE / SG_MAT_N;
 
@@ -274,6 +282,8 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
               }
           }
       }
+#elif defined(KV_DIRECT)
+      // Direct global loads for KV
 #else
       for (var elem_idx = local_id.x; elem_idx < KV_TILE * params.head_dim_qk; elem_idx += WG_SIZE) {
           let k_row = elem_idx / params.head_dim_qk;
@@ -289,36 +299,51 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
 
       workgroupBarrier();
 
-      // accumulate q block * k block into registers across the entire KV tile
-      for (var sg_block = subgroup_id; sg_block < Q_BLOCKS; sg_block += num_subgroups) {
-          let q_block_offset = sg_block * SG_MAT_M * params.head_dim_qk;
-          for (var kv_block = 0u; kv_block < KV_BLOCKS; kv_block++) {
-              var acc: subgroup_matrix_result<f16, SG_MAT_M, SG_MAT_N>;
-              let k_block_offset = kv_block * SG_MAT_N * params.head_dim_qk;
-              for (var head_dim_block = 0u; head_dim_block < params.head_dim_qk; head_dim_block += SG_MAT_K) {
-                  // load q submatrix from shared memory
-                  var q_sg_mat: subgroup_matrix_left<f16, SG_MAT_M, SG_MAT_K> = subgroupMatrixLoad<subgroup_matrix_left<f16, SG_MAT_M, SG_MAT_K>>(
-                      &q_shmem,
-                      q_block_offset + head_dim_block,
-                      false,
-                      params.head_dim_qk
-                  );
+#ifdef KV_DIRECT
+      let tile_kv = min(params.seq_len_kv - kv_tile, KV_TILE);
+#else
+      let tile_kv: u32 = KV_TILE;
+#endif
+      let valid_kv_blocks = tile_kv / SG_MAT_N;
 
-                  // load k submatrix from shared memory
+      // accumulate q block * k block into registers across the entire KV tile
+      for (var kv_block = subgroup_id; kv_block < valid_kv_blocks; kv_block += num_subgroups) {
+          var acc: subgroup_matrix_result<f16, SG_MAT_M, SG_MAT_N>;
+          let k_block_offset = kv_block * SG_MAT_N * params.head_dim_qk;
+          for (var head_dim_block = 0u; head_dim_block < params.head_dim_qk; head_dim_block += SG_MAT_K) {
+              // load q submatrix from shared memory
+              var q_sg_mat: subgroup_matrix_left<f16, SG_MAT_M, SG_MAT_K> = subgroupMatrixLoad<subgroup_matrix_left<f16, SG_MAT_M, SG_MAT_K>>(
+                  &q_shmem,
+                  head_dim_block,
+                  false,
+                  params.head_dim_qk
+              );
+
+                  // load k submatrix from device or shared memory
+#ifdef KV_DIRECT
+                  let k_block_row = kv_tile + kv_block * SG_MAT_N;
+                  let k_global_offset = k_head_offset + k_block_row * params.stride_k1 + head_dim_block;
+                  var k_sg_mat: subgroup_matrix_right<f16, SG_MAT_K, SG_MAT_N> = subgroupMatrixLoad<subgroup_matrix_right<f16, SG_MAT_K, SG_MAT_N>>(
+                      &K,
+                      k_global_offset,
+                      true,
+                      params.stride_k1
+                  );
+#else
                   var k_sg_mat: subgroup_matrix_right<f16, SG_MAT_K, SG_MAT_N> = subgroupMatrixLoad<subgroup_matrix_right<f16, SG_MAT_K, SG_MAT_N>>(
                       &kv_shmem,
                       k_block_offset + head_dim_block,
                       true,
                       params.head_dim_qk
                   );
+#endif
 
-                  acc = subgroupMatrixMultiplyAccumulate(q_sg_mat, k_sg_mat, acc);
-              }
-
-              // store acc to shared memory for softmax (S matrix from paper)
-              let inter_offset = sg_block * SG_MAT_M * KV_TILE + kv_block * SG_MAT_N;
-              subgroupMatrixStore(&inter_shmem, inter_offset, acc, false, KV_TILE);
+              acc = subgroupMatrixMultiplyAccumulate(q_sg_mat, k_sg_mat, acc);
           }
+
+          // store acc to shared memory for softmax (S matrix from paper)
+          let inter_offset = kv_block * SG_MAT_N;
+          subgroupMatrixStore(&inter_shmem, inter_offset, acc, false, KV_TILE);
       }
 
 #ifdef MASK
@@ -339,56 +364,52 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
       workgroupBarrier();
 
       // online softmax
-      for (var sg_block = subgroup_id; sg_block < Q_BLOCKS; sg_block += num_subgroups) {
-          let block_row_start = sg_block * SG_MAT_M;
-          let block_row_end = block_row_start + SG_MAT_M;
-          for (var q_tile_row = block_row_start; q_tile_row < block_row_end; q_tile_row++) {
-              // no need to process rows beyond seq_len_q
-              let global_q_row = q_row_start + q_tile_row;
-              if (global_q_row >= params.seq_len_q) {
-                  break;
+      for (var q_tile_row = subgroup_id; q_tile_row < Q_TILE; q_tile_row += num_subgroups) {
+          var row_iter = q_tile_row / num_subgroups;
+
+          let global_q_row = q_row_start + q_tile_row;
+          if (global_q_row >= params.seq_len_q) {
+              break;
+          }
+
+          // initialize running max for this row
+          // only the first thread in the subgroup needs to read from shared memory.
+          // TODO: is this faster than having all threads read shared memory?
+          var prev_max = select(0.0, row_max_shmem[q_tile_row], sg_inv_id == 0);
+          prev_max = subgroupBroadcastFirst(prev_max);
+          var final_max = prev_max;
+          // pass 1: compute final max across the full KV tile in chunks
+          for (var kv_offset = 0u; kv_offset < KV_TILE; kv_offset += subgroup_size) {
+              let kv_idx = kv_offset + sg_inv_id;
+              let softmax_term = calc_softmax_term(kv_idx, q_tile_row, slope);
+              final_max = subgroupMax(max(final_max, softmax_term));
+          }
+
+
+          var total_exp_term: f16 = 0.0;
+          // pass 2: compute exp sum and write P using final_max
+          for (var kv_offset = 0u; kv_offset < KV_TILE; kv_offset += subgroup_size) {
+              let kv_idx = kv_offset + sg_inv_id;
+              let softmax_term = calc_softmax_term(kv_idx, q_tile_row, slope);
+              let cur_p = select(0.0,
+                                 exp(softmax_term - final_max),
+                                 kv_tile + kv_idx < params.seq_len_kv && kv_idx < KV_TILE);
+              total_exp_term += subgroupAdd(cur_p);
+              if (kv_idx < KV_TILE) {
+                  inter_shmem[kv_idx + q_tile_row * KV_TILE] = cur_p;
               }
+          }
 
-              // initialize running max for this row
-              // only the first thread in the subgroup needs to read from shared memory.
-              // TODO: is this faster than having all threads read shared memory?
-              var prev_max = select(0.0, row_max_shmem[q_tile_row], sg_inv_id == 0);
-              prev_max = subgroupBroadcastFirst(prev_max);
-              var final_max = prev_max;
+          let cur_exp = exp(prev_max - final_max);
 
-              // pass 1: compute final max across the full KV tile in chunks
-              for (var kv_offset = 0u; kv_offset < KV_TILE; kv_offset += subgroup_size) {
-                  let kv_idx = kv_offset + sg_inv_id;
-                  let softmax_term = calc_softmax_term(kv_idx, q_tile_row, slope);
-                  final_max = subgroupMax(max(final_max, softmax_term));
-              }
+          if (sg_inv_id == 0) {
+              row_max_shmem[q_tile_row] = final_max;
+              exp_sum_shmem[q_tile_row] = exp_sum_shmem[q_tile_row] * cur_exp + total_exp_term;
+          }
 
-              var total_exp_term: f16 = 0.0;
-
-              // pass 2: compute exp sum and write P using final_max
-              for (var kv_offset = 0u; kv_offset < KV_TILE; kv_offset += subgroup_size) {
-                  let kv_idx = kv_offset + sg_inv_id;
-                  let softmax_term = calc_softmax_term(kv_idx, q_tile_row, slope);
-                  let cur_p = select(0.0,
-                                     exp(softmax_term - final_max),
-                                     kv_tile + kv_idx < params.seq_len_kv && kv_idx < KV_TILE);
-                  total_exp_term += subgroupAdd(cur_p);
-                  if (kv_idx < KV_TILE) {
-                      inter_shmem[kv_idx + q_tile_row * KV_TILE] = cur_p;
-                  }
-              }
-
-              let cur_exp = exp(prev_max - final_max);
-
-              if (sg_inv_id == 0) {
-                  row_max_shmem[q_tile_row] = final_max;
-                  exp_sum_shmem[q_tile_row] = exp_sum_shmem[q_tile_row] * cur_exp + total_exp_term;
-              }
-
-              for (var elem_idx = sg_inv_id; elem_idx < params.head_dim_v; elem_idx += subgroup_size) {
-                  let idx = q_tile_row * params.head_dim_v + elem_idx;
-                  o_shmem[idx] *= cur_exp;
-              }
+          for (var elem_idx = sg_inv_id; elem_idx < params.head_dim_v; elem_idx += subgroup_size) {
+              let idx = q_tile_row * params.head_dim_v + elem_idx;
+              o_shmem[idx] *= cur_exp;
           }
       }
 
@@ -447,6 +468,8 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
               }
           }
       }
+#elif defined(KV_DIRECT)
+      // Direct global loads for KV
 #else
       for (var elem_idx = local_id.x; elem_idx < KV_TILE * params.head_dim_v; elem_idx += WG_SIZE) {
           let v_row = elem_idx / params.head_dim_v;
@@ -464,19 +487,20 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
 
       // we have P (Q_TILE x KV_TILE) in inter_shmem and V (KV_TILE x head_dim_v) in kv_shmem
       // we want to compute O += P * V across the full KV tile
-      for (var sg_block = subgroup_id; sg_block < Q_BLOCKS; sg_block += num_subgroups) {
-          let o_row_offset = sg_block * SG_MAT_M * params.head_dim_v;
-          for (var head_dim_block = 0u; head_dim_block < params.head_dim_v; head_dim_block += SG_MAT_N) {
+      for (var head_dim_block = subgroup_id * SG_MAT_N;
+           head_dim_block < params.head_dim_v;
+           head_dim_block += num_subgroups * SG_MAT_N) {
               // load O submatrix from shared memory
               var o_sg_mat: subgroup_matrix_result<f16, SG_MAT_M, SG_MAT_N> = subgroupMatrixLoad<subgroup_matrix_result<f16, SG_MAT_M, SG_MAT_N>>(
                   &o_shmem,
-                  o_row_offset + head_dim_block,
+                  head_dim_block,
                   false,
                   params.head_dim_v
               );
 
-              for (var kv_block = 0u; kv_block < KV_BLOCKS; kv_block++) {
-                  let p_offset = sg_block * SG_MAT_M * KV_TILE + kv_block * SG_MAT_N;
+              //for (var kv_block = 0u; kv_block < KV_BLOCKS; kv_block++) {
+              for (var kv_block = 0u; kv_block < valid_kv_blocks; kv_block++) {
+                  let p_offset = kv_block * SG_MAT_N;
                   var p_sg_mat: subgroup_matrix_left<f16, SG_MAT_M, SG_MAT_K> = subgroupMatrixLoad<subgroup_matrix_left<f16, SG_MAT_M, SG_MAT_K>>(
                       &inter_shmem,
                       p_offset,
@@ -484,7 +508,17 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
                       KV_TILE
                   );
 
-                  // load V submatrix from shared memory
+                  // load V submatrix from global or shared memory
+#ifdef KV_DIRECT
+                  let v_block_row = kv_tile + kv_block * SG_MAT_N;
+                  let v_global_offset = v_head_offset + v_block_row * params.stride_v1 + head_dim_block;
+                  var v_sg_mat: subgroup_matrix_right<f16, SG_MAT_K, SG_MAT_N> = subgroupMatrixLoad<subgroup_matrix_right<f16, SG_MAT_K, SG_MAT_N>>(
+                      &V,
+                      v_global_offset,
+                      false,
+                      params.stride_v1
+                  );
+#else
                   let v_block_offset = kv_block * SG_MAT_N * params.head_dim_v;
                   var v_sg_mat: subgroup_matrix_right<f16, SG_MAT_K, SG_MAT_N> = subgroupMatrixLoad<subgroup_matrix_right<f16, SG_MAT_K, SG_MAT_N>>(
                       &kv_shmem,
@@ -492,14 +526,14 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
                       false,
                       params.head_dim_v
                   );
+#endif
 
                   // O += P * V
                   o_sg_mat = subgroupMatrixMultiplyAccumulate(p_sg_mat, v_sg_mat, o_sg_mat);
               }
 
               // store O back to shared memory
-              subgroupMatrixStore(&o_shmem, o_row_offset + head_dim_block, o_sg_mat, false, params.head_dim_v);
-          }
+              subgroupMatrixStore(&o_shmem, head_dim_block, o_sg_mat, false, params.head_dim_v);
       }
 
       workgroupBarrier();
@@ -507,10 +541,9 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
 
 #ifdef SINKS
     // add sinks (applied once after processing all KV tiles)
-    for (var sg_block = subgroup_id; sg_block < Q_BLOCKS; sg_block += num_subgroups) {
-        let block_row_start = sg_block * SG_MAT_M;
-        let block_row_end = block_row_start + SG_MAT_M;
-        for (var q_tile_row = block_row_start; q_tile_row < block_row_end; q_tile_row++) {
+    for (var q_tile_row = subgroup_id;
+         q_tile_row < Q_TILE;
+         q_tile_row += num_subgroups) {
             // no need to process rows beyond seq_len_q
             let global_q_row = q_row_start + q_tile_row;
             if (global_q_row >= params.seq_len_q) {
@@ -537,17 +570,15 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
                 let val = o_shmem[idx] * max_exp;
                 o_shmem[idx] = val;
             }
-        }
     }
 
     workgroupBarrier();
 #endif
 
     // write output back to global memory
-    for (var sg_block = subgroup_id; sg_block < Q_BLOCKS; sg_block += num_subgroups) {
-        let block_row_start = sg_block * SG_MAT_M;
-        let block_row_end = block_row_start + SG_MAT_M;
-        for (var q_tile_row = block_row_start; q_tile_row < block_row_end; q_tile_row++) {
+    for (var q_tile_row = subgroup_id;
+         q_tile_row < Q_TILE;
+         q_tile_row += num_subgroups) {
             let global_q_row = q_row_start + q_tile_row;
             if (global_q_row >= params.seq_len_q) {
                 break;
@@ -563,6 +594,5 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
                 let scaled = o_val * scale;
                 dst[dst_global_offset + q_tile_row * dst2_stride + elem_idx] = f32(scaled);
             }
-        }
     }
 }

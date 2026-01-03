@@ -7,21 +7,23 @@
 #include <string>
 #include <vector>
 
-#define GGML_WEBGPU_F16_SIZE_BYTES 2
-#define GGML_WEBGPU_FLASH_ATTN_PREFERRED_WG_SIZE 64u
+#define GGML_WEBGPU_F16_SIZE_BYTES                   2
+#define GGML_WEBGPU_FLASH_ATTN_PREFERRED_KV_SG_TILES 8u
+#define GGML_WEBGPU_FLASH_ATTN_PREFERRED_WG_SIZE     128u
 
 struct ggml_webgpu_flash_attn_shader_lib_context {
-    ggml_type    kv_type;
-    uint32_t     head_dim_qk;
-    uint32_t     head_dim_v;
-    bool         has_mask;
-    bool         has_sinks;
-    bool         uses_logit_softcap;
-    uint32_t     sg_mat_m;
-    uint32_t     sg_mat_n;
-    uint32_t     sg_mat_k;
-    size_t       wg_mem_limit_bytes;
-    uint32_t     max_subgroup_size;
+    ggml_type kv_type;
+    uint32_t  head_dim_qk;
+    uint32_t  head_dim_v;
+    bool      kv_direct;
+    bool      has_mask;
+    bool      has_sinks;
+    bool      uses_logit_softcap;
+    uint32_t  sg_mat_m;
+    uint32_t  sg_mat_n;
+    uint32_t  sg_mat_k;
+    size_t    wg_mem_limit_bytes;
+    uint32_t  max_subgroup_size;
 };
 
 struct ggml_webgpu_flash_attn_shader_decisions {
@@ -56,61 +58,15 @@ inline size_t ggml_webgpu_flash_attn_wg_mem_bytes(uint32_t q_tile,
     return elems * GGML_WEBGPU_F16_SIZE_BYTES;
 }
 
-// Returns a pair of (q_tile, kv_tile) that best fits within the workgroup memory limit
-// Currently set to prefer the configuration that comes closest to using half of the limit
-// Assumes that the base minimum tile sizes fits within the limit
-static std::pair<uint32_t, uint32_t> ggml_webgpu_flash_attn_tile_sizes(
-    const ggml_webgpu_flash_attn_shader_lib_context & context) {
-    std::pair<uint32_t, uint32_t> best_pair  = { 0, 0 };
-    size_t                        best_delta = 0;
-
-    const uint32_t min_q_tile   = context.sg_mat_m;
-    const uint32_t min_kv_tile  = context.sg_mat_n;
-    const size_t   limit_bytes  = context.wg_mem_limit_bytes;
-    const size_t   target_bytes = limit_bytes / 2;
-    const uint32_t max_head_dim = std::max(context.head_dim_qk, context.head_dim_v);
-
-    // These sizes come from the equations for wg_mem_bytes, solving for q_tile or kv_tile respectively
-    const size_t base_kv_bytes = min_kv_tile * max_head_dim * GGML_WEBGPU_F16_SIZE_BYTES;
-    const size_t bytes_per_q =
-        (context.head_dim_qk + context.head_dim_v + (context.has_mask ? min_kv_tile : 0) + min_kv_tile + 2) *
+static uint32_t ggml_webgpu_flash_attn_max_kv_tile(const ggml_webgpu_flash_attn_shader_lib_context & context) {
+    const size_t limit_bytes  = context.wg_mem_limit_bytes;
+    const size_t q_tile       = context.sg_mat_m;
+    const size_t base_q_bytes = (context.head_dim_qk + context.head_dim_v + 2) * q_tile * GGML_WEBGPU_F16_SIZE_BYTES;
+    const size_t bytes_per_kv =
+        (std::max(context.head_dim_qk, context.head_dim_v) + (context.has_mask ? q_tile : 0) + q_tile) *
         GGML_WEBGPU_F16_SIZE_BYTES;
-    const uint32_t max_q_tile = (limit_bytes - base_kv_bytes) / bytes_per_q;
-
-    const size_t base_q_bytes =
-        (context.head_dim_qk + context.head_dim_v + 2) * min_q_tile * GGML_WEBGPU_F16_SIZE_BYTES;
-    const size_t   bytes_per_kv =
-        (max_head_dim + (context.has_mask ? min_q_tile : 0) + min_q_tile) * GGML_WEBGPU_F16_SIZE_BYTES;
-    const uint32_t max_kv_tile  = (limit_bytes - base_q_bytes) / bytes_per_kv;
-
-    // step by minimum tile sizes
-    for (uint32_t q = min_q_tile; q <= max_q_tile; q += min_q_tile) {
-        for (uint32_t kv = min_kv_tile; kv <= max_kv_tile; kv += min_kv_tile) {
-            size_t bytes =
-                ggml_webgpu_flash_attn_wg_mem_bytes(q, kv, context.head_dim_qk, context.head_dim_v, context.has_mask);
-            if (bytes <= limit_bytes) {
-                size_t delta = bytes > target_bytes ? bytes - target_bytes : target_bytes - bytes;
-                if (best_pair.first == 0 || delta < best_delta) {
-                    best_pair  = { q, kv };
-                    best_delta = delta;
-                }
-            }
-        }
-    }
-
-    return best_pair;
-}
-
-static const char * kv_shader_type(ggml_type kv_type) {
-    switch (kv_type) {
-        case GGML_TYPE_F32: return "f32";
-        case GGML_TYPE_F16: return "f16";
-        case GGML_TYPE_Q4_0: return "f16";
-        case GGML_TYPE_Q8_0: return "f16";
-        default:
-            GGML_ABORT("Unsupported KV type for flash attention shader");
-            return "";
-    }
+    const uint32_t max_kv_tile = (limit_bytes - base_q_bytes) / bytes_per_kv;
+    return (max_kv_tile / context.sg_mat_n) * context.sg_mat_n;
 }
 
 inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_flash_attn_shader(
@@ -120,14 +76,23 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_flash_attn_shader(
     std::vector<std::string> defines;
     std::string              variant = "flash_attn";
 
-    defines.push_back(std::string("KV_TYPE=") + kv_shader_type(context.kv_type));
-    variant += std::string("_") + ggml_type_name(context.kv_type);
-
-    if (context.kv_type == GGML_TYPE_Q4_0) {
-        defines.push_back("KV_Q4_0");
-    } else if (context.kv_type == GGML_TYPE_Q8_0) {
-        defines.push_back("KV_Q8_0");
+    switch (context.kv_type) {
+        case GGML_TYPE_F32:
+            defines.push_back("KV_F32");
+            break;
+        case GGML_TYPE_F16:
+            defines.push_back("KV_F16");
+            break;
+        case GGML_TYPE_Q4_0:
+            defines.push_back("KV_Q4_0");
+            break;
+        case GGML_TYPE_Q8_0:
+            defines.push_back("KV_Q8_0");
+            break;
+        default:
+            GGML_ABORT("Unsupported KV type for flash attention shader");
     }
+    variant += std::string("_") + ggml_type_name(context.kv_type);
 
     if (context.has_mask) {
         defines.push_back("MASK");
@@ -142,6 +107,11 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_flash_attn_shader(
         variant += "_lgsc";
     }
 
+    if (context.kv_direct) {
+        defines.push_back("KV_DIRECT");
+        variant += "_kvdirect";
+    }
+
     defines.push_back(std::string("HEAD_DIM_QK=") + std::to_string(context.head_dim_qk));
     variant += std::string("_hsqk") + std::to_string(context.head_dim_qk);
 
@@ -154,12 +124,15 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_flash_attn_shader(
     defines.push_back(std::string("SG_MAT_K=") + std::to_string(context.sg_mat_k));
 
     // Add chosen Q/KV tile sizes
-    auto [q_tile, kv_tile] = ggml_webgpu_flash_attn_tile_sizes(context);
+    uint32_t q_tile  = context.sg_mat_m;
+    uint32_t kv_tile = std::min(ggml_webgpu_flash_attn_max_kv_tile(context),
+                                context.sg_mat_n * GGML_WEBGPU_FLASH_ATTN_PREFERRED_KV_SG_TILES);
     defines.push_back(std::string("Q_TILE=") + std::to_string(q_tile));
     defines.push_back(std::string("KV_TILE=") + std::to_string(kv_tile));
 
     // workgroup size
     uint32_t wg_size = std::max(context.max_subgroup_size, GGML_WEBGPU_FLASH_ATTN_PREFERRED_WG_SIZE);
+
     defines.push_back(std::string("WG_SIZE=") + std::to_string(wg_size));
 
     ggml_webgpu_processed_shader result;
