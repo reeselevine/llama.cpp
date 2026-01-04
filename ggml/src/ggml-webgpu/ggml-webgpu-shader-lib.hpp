@@ -47,17 +47,17 @@ inline size_t ggml_webgpu_flash_attn_wg_mem_bytes(uint32_t q_tile,
                                                   bool     kv_direct) {
     const uint32_t max_head_dim = std::max(head_dim_qk, head_dim_v);
     size_t         elems        = 0;
-    elems += q_tile * head_dim_qk;    // q_shmem
+    elems += q_tile * head_dim_qk;        // q_shmem
     if (!kv_direct) {
         elems += kv_tile * max_head_dim;  // kv_shmem
     }
-    elems += q_tile * head_dim_v;     // o_shmem
+    elems += q_tile * head_dim_v;         // o_shmem
     if (has_mask) {
-        elems += q_tile * kv_tile;    // mask_shmem
+        elems += q_tile * kv_tile;        // mask_shmem
     }
-    elems += q_tile * kv_tile;        // inter_shmem
-    elems += q_tile;                  // row_max_shmem
-    elems += q_tile;                  // exp_sum_shmem
+    elems += q_tile * kv_tile;            // inter_shmem
+    elems += q_tile;                      // row_max_shmem
+    elems += q_tile;                      // exp_sum_shmem
     return elems * GGML_WEBGPU_F16_SIZE_BYTES;
 }
 
@@ -65,7 +65,7 @@ static uint32_t ggml_webgpu_flash_attn_max_kv_tile(const ggml_webgpu_flash_attn_
     const size_t limit_bytes  = context.wg_mem_limit_bytes;
     const size_t q_tile       = context.sg_mat_m;
     const size_t base_q_bytes = (context.head_dim_qk + context.head_dim_v + 2) * q_tile * GGML_WEBGPU_F16_SIZE_BYTES;
-    size_t bytes_per_kv = 0;
+    size_t       bytes_per_kv = 0;
     if (!context.kv_direct) {
         bytes_per_kv += std::max(context.head_dim_qk, context.head_dim_v);
     }

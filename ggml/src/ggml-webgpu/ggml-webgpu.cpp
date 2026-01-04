@@ -2665,15 +2665,13 @@ static bool ggml_backend_webgpu_device_supports_op(ggml_backend_dev_t dev, const
                     break;
                 }
                 // Head dimensions must fit in workgroup memory with minimum tile sizes
-                size_t       limit_bytes = webgpu_ctx->limits.maxComputeWorkgroupStorageSize;
-                const bool   has_mask    = op->src[3] != nullptr;
-                const bool   kv_direct   = src1->type == GGML_TYPE_F16 &&
-                                           (src0->ne[0] % webgpu_ctx->sg_mat_k) == 0 &&
-                                           (src1->ne[1] % webgpu_ctx->sg_mat_n) == 0;
-                const size_t min_bytes =
-                    ggml_webgpu_flash_attn_wg_mem_bytes(webgpu_ctx->sg_mat_m, webgpu_ctx->sg_mat_n,
-                                                        (uint32_t) src0->ne[0], (uint32_t) src2->ne[0], has_mask,
-                                                        kv_direct);
+                size_t     limit_bytes = webgpu_ctx->limits.maxComputeWorkgroupStorageSize;
+                const bool has_mask    = op->src[3] != nullptr;
+                const bool kv_direct   = src1->type == GGML_TYPE_F16 && (src0->ne[0] % webgpu_ctx->sg_mat_k) == 0 &&
+                                       (src1->ne[1] % webgpu_ctx->sg_mat_n) == 0;
+                const size_t min_bytes = ggml_webgpu_flash_attn_wg_mem_bytes(
+                    webgpu_ctx->sg_mat_m, webgpu_ctx->sg_mat_n, (uint32_t) src0->ne[0], (uint32_t) src2->ne[0],
+                    has_mask, kv_direct);
                 if (min_bytes > limit_bytes) {
                     break;
                 }
