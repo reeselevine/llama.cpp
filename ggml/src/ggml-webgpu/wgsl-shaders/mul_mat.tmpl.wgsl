@@ -67,6 +67,14 @@
   },
   {
     "REPLS": {
+      "SRC0_TYPE": "q8_1",
+      "SRC1_TYPE": "f32",
+      "BLOCK_SIZE": 32
+    },
+    "DECLS": ["BYTE_HELPERS", "Q8_1_T", "Q8_1"]
+  },
+  {
+    "REPLS": {
       "SRC0_TYPE": "q2_k",
       "SRC1_TYPE": "f32",
       "BLOCK_SIZE": 256

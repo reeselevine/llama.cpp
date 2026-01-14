@@ -87,6 +87,226 @@
       "VEC_SIZE" : 1,
     },
     "DECLS": ["BYTE_HELPERS", "SCALAR", "SHMEM_SCALAR", "INIT_SRC0_SHMEM_Q4_0", "INIT_SRC1_SHMEM"]
+  },
+  {
+    "SHADER_SUFFIX": "q4_1_f32_vec",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "vec4<f32>",
+      "DST_TYPE" : "vec4<f32>",
+      "SHMEM_TYPE" : "vec4<f16>",
+      "VEC_SIZE" : 4,
+    },
+    "DECLS": ["BYTE_HELPERS", "VEC", "SHMEM_VEC", "INIT_SRC0_SHMEM_Q4_1", "INIT_SRC1_SHMEM"]
+  },
+  {
+    "SHADER_SUFFIX": "q4_1_f32",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "f32",
+      "DST_TYPE" : "f32",
+      "SHMEM_TYPE" : "f16",
+      "VEC_SIZE" : 1,
+    },
+    "DECLS": ["BYTE_HELPERS", "SCALAR", "SHMEM_SCALAR", "INIT_SRC0_SHMEM_Q4_1", "INIT_SRC1_SHMEM"]
+  },
+  {
+    "SHADER_SUFFIX": "q5_0_f32_vec",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "vec4<f32>",
+      "DST_TYPE" : "vec4<f32>",
+      "SHMEM_TYPE" : "vec4<f16>",
+      "VEC_SIZE" : 4,
+    },
+    "DECLS": ["BYTE_HELPERS", "VEC", "SHMEM_VEC", "INIT_SRC0_SHMEM_Q5_0", "INIT_SRC1_SHMEM"]
+  },
+  {
+    "SHADER_SUFFIX": "q5_0_f32",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "f32",
+      "DST_TYPE" : "f32",
+      "SHMEM_TYPE" : "f16",
+      "VEC_SIZE" : 1,
+    },
+    "DECLS": ["BYTE_HELPERS", "SCALAR", "SHMEM_SCALAR", "INIT_SRC0_SHMEM_Q5_0", "INIT_SRC1_SHMEM"]
+  },
+  {
+    "SHADER_SUFFIX": "q5_1_f32_vec",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "vec4<f32>",
+      "DST_TYPE" : "vec4<f32>",
+      "SHMEM_TYPE" : "vec4<f16>",
+      "VEC_SIZE" : 4,
+    },
+    "DECLS": ["BYTE_HELPERS", "VEC", "SHMEM_VEC", "INIT_SRC0_SHMEM_Q5_1", "INIT_SRC1_SHMEM"]
+  },
+  {
+    "SHADER_SUFFIX": "q5_1_f32",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "f32",
+      "DST_TYPE" : "f32",
+      "SHMEM_TYPE" : "f16",
+      "VEC_SIZE" : 1,
+    },
+    "DECLS": ["BYTE_HELPERS", "SCALAR", "SHMEM_SCALAR", "INIT_SRC0_SHMEM_Q5_1", "INIT_SRC1_SHMEM"]
+  },
+  {
+    "SHADER_SUFFIX": "q8_0_f32_vec",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "vec4<f32>",
+      "DST_TYPE" : "vec4<f32>",
+      "SHMEM_TYPE" : "vec4<f16>",
+      "VEC_SIZE" : 4,
+    },
+    "DECLS": ["BYTE_HELPERS", "VEC", "SHMEM_VEC", "INIT_SRC0_SHMEM_Q8_0", "INIT_SRC1_SHMEM"]
+  },
+  {
+    "SHADER_SUFFIX": "q8_0_f32",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "f32",
+      "DST_TYPE" : "f32",
+      "SHMEM_TYPE" : "f16",
+      "VEC_SIZE" : 1,
+    },
+    "DECLS": ["BYTE_HELPERS", "SCALAR", "SHMEM_SCALAR", "INIT_SRC0_SHMEM_Q8_0", "INIT_SRC1_SHMEM"]
+  },
+  {
+    "SHADER_SUFFIX": "q8_1_f32_vec",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "vec4<f32>",
+      "DST_TYPE" : "vec4<f32>",
+      "SHMEM_TYPE" : "vec4<f16>",
+      "VEC_SIZE" : 4,
+    },
+    "DECLS": ["BYTE_HELPERS", "VEC", "SHMEM_VEC", "INIT_SRC0_SHMEM_Q8_1", "INIT_SRC1_SHMEM"]
+  },
+  {
+    "SHADER_SUFFIX": "q8_1_f32",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "f32",
+      "DST_TYPE" : "f32",
+      "SHMEM_TYPE" : "f16",
+      "VEC_SIZE" : 1,
+    },
+    "DECLS": ["BYTE_HELPERS", "SCALAR", "SHMEM_SCALAR", "INIT_SRC0_SHMEM_Q8_1", "INIT_SRC1_SHMEM"]
+  },
+  {
+    "SHADER_SUFFIX": "q2_k_f32",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "f32",
+      "DST_TYPE" : "f32",
+      "SHMEM_TYPE" : "f16",
+      "VEC_SIZE" : 1,
+    },
+    "DECLS": ["BYTE_HELPERS", "SCALAR", "SHMEM_SCALAR", "INIT_SRC0_SHMEM_Q2_K", "INIT_SRC1_SHMEM"]
+  },
+  {
+    "SHADER_SUFFIX": "q2_k_f32_vec",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "vec4<f32>",
+      "DST_TYPE" : "vec4<f32>",
+      "SHMEM_TYPE" : "vec4<f16>",
+      "VEC_SIZE" : 4,
+    },
+    "DECLS": ["BYTE_HELPERS", "VEC", "SHMEM_VEC", "INIT_SRC0_SHMEM_Q2_K", "INIT_SRC1_SHMEM"]
+  },
+  {
+    "SHADER_SUFFIX": "q3_k_f32",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "f32",
+      "DST_TYPE" : "f32",
+      "SHMEM_TYPE" : "f16",
+      "VEC_SIZE" : 1,
+    },
+    "DECLS": ["BYTE_HELPERS", "SCALAR", "SHMEM_SCALAR", "INIT_SRC0_SHMEM_Q3_K", "INIT_SRC1_SHMEM"]
+  },
+  {
+    "SHADER_SUFFIX": "q3_k_f32_vec",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "vec4<f32>",
+      "DST_TYPE" : "vec4<f32>",
+      "SHMEM_TYPE" : "vec4<f16>",
+      "VEC_SIZE" : 4,
+    },
+    "DECLS": ["BYTE_HELPERS", "VEC", "SHMEM_VEC", "INIT_SRC0_SHMEM_Q3_K", "INIT_SRC1_SHMEM"]
+  },
+  {
+    "SHADER_SUFFIX": "q4_k_f32",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "f32",
+      "DST_TYPE" : "f32",
+      "SHMEM_TYPE" : "f16",
+      "VEC_SIZE" : 1,
+    },
+    "DECLS": ["BYTE_HELPERS", "SCALAR", "SHMEM_SCALAR", "INIT_SRC0_SHMEM_Q4_K", "INIT_SRC1_SHMEM"]
+  },
+  {
+    "SHADER_SUFFIX": "q4_k_f32_vec",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "vec4<f32>",
+      "DST_TYPE" : "vec4<f32>",
+      "SHMEM_TYPE" : "vec4<f16>",
+      "VEC_SIZE" : 4,
+    },
+    "DECLS": ["BYTE_HELPERS", "VEC", "SHMEM_VEC", "INIT_SRC0_SHMEM_Q4_K", "INIT_SRC1_SHMEM"]
+  },
+  {
+    "SHADER_SUFFIX": "q5_k_f32",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "f32",
+      "DST_TYPE" : "f32",
+      "SHMEM_TYPE" : "f16",
+      "VEC_SIZE" : 1,
+    },
+    "DECLS": ["BYTE_HELPERS", "SCALAR", "SHMEM_SCALAR", "INIT_SRC0_SHMEM_Q5_K", "INIT_SRC1_SHMEM"]
+  },
+  {
+    "SHADER_SUFFIX": "q5_k_f32_vec",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "vec4<f32>",
+      "DST_TYPE" : "vec4<f32>",
+      "SHMEM_TYPE" : "vec4<f16>",
+      "VEC_SIZE" : 4,
+    },
+    "DECLS": ["BYTE_HELPERS", "VEC", "SHMEM_VEC", "INIT_SRC0_SHMEM_Q5_K", "INIT_SRC1_SHMEM"]
+  },
+  {
+    "SHADER_SUFFIX": "q6_k_f32",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "f32",
+      "DST_TYPE" : "f32",
+      "SHMEM_TYPE" : "f16",
+      "VEC_SIZE" : 1,
+    },
+    "DECLS": ["BYTE_HELPERS", "SCALAR", "SHMEM_SCALAR", "INIT_SRC0_SHMEM_Q6_K", "INIT_SRC1_SHMEM"]
+  },
+  {
+    "SHADER_SUFFIX": "q6_k_f32_vec",
+    "REPLS": {
+      "SRC0_TYPE" : "f16",
+      "SRC1_TYPE" : "vec4<f32>",
+      "DST_TYPE" : "vec4<f32>",
+      "SHMEM_TYPE" : "vec4<f16>",
+      "VEC_SIZE" : 4,
+    },
+    "DECLS": ["BYTE_HELPERS", "VEC", "SHMEM_VEC", "INIT_SRC0_SHMEM_Q6_K", "INIT_SRC1_SHMEM"]
   }
 ]
 
@@ -200,20 +420,19 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
 
     for (var k_outer = 0u; k_outer < params.k; k_outer += TILE_K) {
 
-        // see mul_mat_decls.tmpl
         init_shmem_src0(thread_id, src0_batch_offset, offset_m, k_outer);
         init_shmem_src1(thread_id, src1_batch_offset, offset_n, k_outer);
 
         workgroupBarrier();
 
-        let k_end = min(TILE_K, params.k - k_outer);
+        let k_end = min(TILE_K, params.k - k_outer); // min(32, # of blocks - k_outer)
 
         for (var k_inner = 0u; k_inner < k_end; k_inner++) {
             var src0_tile: array<f16, TILE_M>;
             for (var tm = 0u; tm < TILE_M; tm++) {
-                let src0_m = local_m * TILE_M + tm;
-                let src0_idx = k_inner + src0_m * TILE_K;
-                src0_tile[tm] = shmem[src0_idx];
+                let src0_m = local_m * TILE_M + tm;  
+                let src0_idx = k_inner + src0_m * TILE_K; // reads from columns 0->31
+                src0_tile[tm] = shmem[src0_idx]; // 256 stores into a 32 x 8 matrix
             }
             for (var tn = 0u; tn < TILE_N; tn++) {
                 let src1_n = local_n * TILE_N + tn;
