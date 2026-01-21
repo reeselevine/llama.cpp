@@ -465,4 +465,50 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_unary_shader(
     return result;
 }
 
+/** Scale **/
+
+struct ggml_webgpu_scale_pipeline_key {
+    int inplace;
+
+    bool operator==(const ggml_webgpu_scale_pipeline_key & other) const {
+        return inplace == other.inplace;
+    }
+};
+
+struct ggml_webgpu_scale_pipeline_key_hash {
+    size_t operator()(const ggml_webgpu_scale_pipeline_key & key) const {
+        size_t seed = 0;
+        ggml_webgpu_hash_combine(seed, key.inplace);
+        return seed;
+    }
+};
+
+struct ggml_webgpu_scale_shader_lib_context {
+    ggml_webgpu_scale_pipeline_key key;
+    uint32_t                       max_wg_size;
+};
+
+inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_scale_shader(
+    pre_wgsl::Preprocessor &                     preprocessor,
+    const char *                                 shader_src,
+    const ggml_webgpu_scale_shader_lib_context & context) {
+    std::vector<std::string> defines;
+    std::string              variant = "scale";
+
+    if (context.key.inplace) {
+        defines.push_back("INPLACE");
+        variant += "_inplace";
+    }
+
+    defines.push_back(std::string("WG_SIZE=") + std::to_string(context.max_wg_size));
+
+    ggml_webgpu_processed_shader result;
+    result.wgsl                                      = preprocessor.preprocess(shader_src, defines);
+    result.variant                                   = variant;
+    ggml_webgpu_generic_shader_decisions * decisions = new ggml_webgpu_generic_shader_decisions();
+    decisions->wg_size                               = context.max_wg_size;
+    result.decisions                                 = decisions;
+    return result;
+}
+
 #endif  // GGML_WEBGPU_SHADER_LIB_HPP
