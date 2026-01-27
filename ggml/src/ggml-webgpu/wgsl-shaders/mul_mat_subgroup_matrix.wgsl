@@ -1,100 +1,12 @@
-#define(VARIANTS)
-[
-  {
-    "SHADER_SUFFIX": "f32_f32_vec",
-    "REPLS": {
-      "SRC0_TYPE" : "vec4<f32>",
-      "SRC1_TYPE" : "vec4<f32>",
-      "DST_TYPE" : "vec4<f32>",
-      "SHMEM_TYPE" : "vec4<f16>",
-      "VEC_SIZE" : 4,
-    },
-    "DECLS": ["VEC", "SHMEM_VEC", "INIT_SRC0_SHMEM_FLOAT", "INIT_SRC1_SHMEM"]
-  },
-  {
-    "SHADER_SUFFIX": "f32_f32",
-    "REPLS": {
-      "SRC0_TYPE" : "f32",
-      "SRC1_TYPE" : "f32",
-      "DST_TYPE" : "f32",
-      "SHMEM_TYPE" : "f16",
-      "VEC_SIZE" : 1,
-    },
-    "DECLS": ["SCALAR", "SHMEM_SCALAR", "INIT_SRC0_SHMEM_FLOAT", "INIT_SRC1_SHMEM"]
-  },
-  {
-    "SHADER_SUFFIX": "f16_f32_vec",
-    "REPLS": {
-      "SRC0_TYPE" : "vec4<f16>",
-      "SRC1_TYPE" : "vec4<f32>",
-      "DST_TYPE" : "vec4<f32>",
-      "SHMEM_TYPE" : "vec4<f16>",
-      "VEC_SIZE" : 4,
-    },
-    "DECLS": ["VEC", "SHMEM_VEC", "INIT_SRC0_SHMEM_FLOAT", "INIT_SRC1_SHMEM"]
-  },
-  {
-    "SHADER_SUFFIX": "f16_f32",
-    "REPLS": {
-      "SRC0_TYPE" : "f16",
-      "SRC1_TYPE" : "f32",
-      "DST_TYPE" : "f32",
-      "SHMEM_TYPE" : "f16",
-      "VEC_SIZE" : 1,
-    },
-    "DECLS": ["SCALAR", "SHMEM_SCALAR", "INIT_SRC0_SHMEM_FLOAT", "INIT_SRC1_SHMEM"]
-  },
-  {
-    "SHADER_SUFFIX": "f16_f16_vec",
-    "REPLS": {
-      "SRC0_TYPE" : "vec4<f16>",
-      "SRC1_TYPE" : "vec4<f16>",
-      "DST_TYPE" : "vec4<f32>",
-      "SHMEM_TYPE" : "vec4<f16>",
-      "VEC_SIZE" : 4,
-    },
-    "DECLS": ["VEC", "SHMEM_VEC", "INIT_SRC0_SHMEM_FLOAT", "INIT_SRC1_SHMEM"]
-  },
-  {
-    "SHADER_SUFFIX": "f16_f16",
-    "REPLS": {
-      "SRC0_TYPE" : "f16",
-      "SRC1_TYPE" : "f16",
-      "DST_TYPE" : "f32",
-      "SHMEM_TYPE" : "f16",
-      "VEC_SIZE" : 1,
-    },
-    "DECLS": ["SCALAR", "SHMEM_SCALAR", "INIT_SRC0_SHMEM_FLOAT", "INIT_SRC1_SHMEM"]
-  },
-  {
-    "SHADER_SUFFIX": "q4_0_f32_vec",
-    "REPLS": {
-      "SRC0_TYPE" : "f16",
-      "SRC1_TYPE" : "vec4<f32>",
-      "DST_TYPE" : "vec4<f32>",
-      "SHMEM_TYPE" : "vec4<f16>",
-      "VEC_SIZE" : 4,
-    },
-    "DECLS": ["BYTE_HELPERS", "VEC", "SHMEM_VEC", "INIT_SRC0_SHMEM_Q4_0", "INIT_SRC1_SHMEM"]
-  },
-  {
-    "SHADER_SUFFIX": "q4_0_f32",
-    "REPLS": {
-      "SRC0_TYPE" : "f16",
-      "SRC1_TYPE" : "f32",
-      "DST_TYPE" : "f32",
-      "SHMEM_TYPE" : "f16",
-      "VEC_SIZE" : 1,
-    },
-    "DECLS": ["BYTE_HELPERS", "SCALAR", "SHMEM_SCALAR", "INIT_SRC0_SHMEM_Q4_0", "INIT_SRC1_SHMEM"]
-  }
-]
+diagnostic(off, chromium.subgroup_matrix_uniformity);
+enable f16;
+enable subgroups;
+enable chromium_experimental_subgroup_matrix;
 
-#end(VARIANTS)
+#include "common_decls.tmpl"
+#include "mul_mat_decls.tmpl"
 
-#define(DECLS)
-
-#decl(VEC)
+#ifdef VEC
 fn store_dst(shmem_idx: u32, dst_idx: u32) {
     dst[dst_idx] = vec4<f32>(
         f32(shmem[shmem_idx]),
@@ -103,21 +15,13 @@ fn store_dst(shmem_idx: u32, dst_idx: u32) {
         f32(shmem[shmem_idx + 3])
     );
 }
-#enddecl(VEC)
+#endif
 
-#decl(SCALAR)
+#ifdef SCALAR
 fn store_dst(shmem_idx: u32, dst_idx: u32) {
     dst[dst_idx] = f32(shmem[shmem_idx]);
 }
-#enddecl(SCALAR)
-
-#end(DECLS)
-
-#define(SHADER)
-diagnostic(off, chromium.subgroup_matrix_uniformity);
-enable f16;
-enable subgroups;
-enable chromium_experimental_subgroup_matrix;
+#endif
 
 struct MulMatParams {
     offset_src0: u32,
@@ -143,8 +47,6 @@ struct MulMatParams {
 @group(0) @binding(2) var<storage, read_write> dst: array<{{DST_TYPE}}>; // M rows, N columns (transposed)
 
 @group(0) @binding(3) var<uniform> params: MulMatParams;
-
-DECLS
 
 // Note: These are string interpolated at build time, cannot use override constants due to limitations in
 // current Dawn version type definitions/matrix load requirements for constant memory sizes.
@@ -299,4 +201,3 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
     }
 }
 
-#end(SHADER)
