@@ -1272,10 +1272,6 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context &ctx,
 
         std::vector<wgpu::ConstantEntry> constants;
         if (shader_lib_ctx.key.is_vec) {
-          printf("DEBUG: Creating mul_mat_vec pipeline - wg_size=%u, "
-                 "tile_k=%u, outputs_per_wg=%u\n",
-                 shader_lib_ctx.wg_size, shader_lib_ctx.tile_k,
-                 shader_lib_ctx.outputs_per_wg);
           constants.push_back({nullptr, "WORKGROUP_SIZE",
                                static_cast<double>(shader_lib_ctx.wg_size)});
           constants.push_back(
@@ -1283,24 +1279,18 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context &ctx,
           constants.push_back(
               {nullptr, "OUTPUTS_PER_WG",
                static_cast<double>(shader_lib_ctx.outputs_per_wg)});
-          printf("DEBUG: constants.size() = %zu\n", constants.size());
         } else if (shader_lib_ctx.key.register_tile) {
-          printf("DEBUG: Creating reg_tile pipeline - wg_size_m=%u, "
-                 "wg_size_n=%u, tile_k=%u\n",
-                 shader_lib_ctx.wg_size_m, shader_lib_ctx.wg_size_n,
-                 shader_lib_ctx.tile_k);
           constants.push_back({nullptr, "WORKGROUP_SIZE_M",
                                static_cast<double>(shader_lib_ctx.wg_size_m)});
           constants.push_back({nullptr, "WORKGROUP_SIZE_N",
                                static_cast<double>(shader_lib_ctx.wg_size_n)});
           constants.push_back(
               {nullptr, "TILE_K", static_cast<double>(shader_lib_ctx.tile_k)});
-          printf("DEBUG: constants.size() = %zu\n", constants.size());
         }
 
-        printf("DEBUG: Creating pipeline with variant='%s', "
-               "constants.size()=%zu\n",
-               processed.variant.c_str(), constants.size());
+        // printf("DEBUG: Creating pipeline with variant='%s', "
+        //        "constants.size()=%zu\n",
+        //        processed.variant.c_str(), constants.size());
 
         pipeline =
             ggml_webgpu_create_pipeline(ctx->device, processed.wgsl.c_str(),
