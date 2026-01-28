@@ -1016,16 +1016,26 @@ static webgpu_command ggml_webgpu_get_rows(webgpu_context & ctx,
             pipeline = it->second;
         } else {
             // JIT compile the shader
-            const char* shader_src = wgsl_get_rows;  // Your base shader with #include directives
+            const char* shader_src = wgsl_get_rows;
+            
+            // Build shader context
+            ggml_webgpu_get_rows_shader_lib_context shader_lib_ctx = {
+                .key = key,
+                .max_wg_size = WEBGPU_MAX_WG_SIZE,
+            };
             
             ggml_webgpu_processed_shader processed =
-                ggml_webgpu_preprocess_get_rows_shader(ctx->p, shader_src, src->type, vectorized);
+                ggml_webgpu_preprocess_get_rows_shader(ctx->p, shader_src, shader_lib_ctx);
             
-            std::vector<wgpu::ConstantEntry> constants = ggml_webgpu_wg_size_entry(WEBGPU_MAX_WG_SIZE);
+            std::vector<wgpu::ConstantEntry> constants = ggml_webgpu_wg_size_entry(shader_lib_ctx.max_wg_size);
             pipeline = ggml_webgpu_create_pipeline(ctx->device, processed.wgsl.c_str(), processed.variant.c_str(), constants);
+            pipeline.context = processed.decisions;
             ctx->get_rows_pipelines.emplace(key, pipeline);
         }
     }
+    
+    ggml_webgpu_generic_shader_decisions decisions =
+        *static_cast<ggml_webgpu_generic_shader_decisions *>(pipeline.context);
     
     std::vector<uint32_t> params = {
         (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src) / ggml_type_size(src->type)),
@@ -1055,7 +1065,7 @@ static webgpu_command ggml_webgpu_get_rows(webgpu_context & ctx,
          .size    = ggml_webgpu_tensor_binding_size(ctx, dst) }
     };
 
-    uint32_t wg_x = CEIL_DIV(dst->ne[1] * dst->ne[2] * dst->ne[3], WEBGPU_MAX_WG_SIZE);
+    uint32_t wg_x = CEIL_DIV(dst->ne[1] * dst->ne[2] * dst->ne[3], decisions.wg_size);
 
     return ggml_backend_webgpu_build(ctx, pipeline, params, entries, wg_x);
 }
@@ -1115,6 +1125,10 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
         .sg_mat_m = ctx->sg_mat_m,
         .sg_mat_n = ctx->sg_mat_n,
         .sg_mat_k = ctx->sg_mat_k,
+        .subgroup_m = WEBGPU_MUL_MAT_SUBGROUP_M,          
+        .subgroup_n = WEBGPU_MUL_MAT_SUBGROUP_N,          
+        .subgroup_matrix_m = WEBGPU_MUL_MAT_SUBGROUP_MATRIX_M,  
+        .subgroup_matrix_n = WEBGPU_MUL_MAT_SUBGROUP_MATRIX_N,  
         .tile_m = static_cast<uint32_t>(WEBGPU_MUL_MAT_TILE_M),
         .tile_n = static_cast<uint32_t>(WEBGPU_MUL_MAT_TILE_N),
         .tile_k = static_cast<uint32_t>(is_vec ? WEBGPU_MUL_MAT_VEC_TILE_K : WEBGPU_MUL_MAT_TILE_K),

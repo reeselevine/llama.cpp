@@ -17,6 +17,16 @@
 
 #define GGML_WEBGPU_ARGSORT_MERGE_MAX_WG_SIZE 512u
 
+// helper function for replacing {{PLACEHOLDERS}}
+inline void ggml_webgpu_replace_placeholder(std::string& shader_code, const std::string& key, const std::string& value) {
+    std::string pattern = "{{" + key + "}}";
+    size_t pos = 0;
+    while ((pos = shader_code.find(pattern, pos)) != std::string::npos) {
+        shader_code.replace(pos, pattern.length(), value);
+        pos += value.length();
+    }
+}
+
 struct ggml_webgpu_processed_shader {
     std::string wgsl;
     std::string variant;
@@ -513,8 +523,6 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_scale_shader(
 
 /** get_rows */
 
-#define WEBGPU_MAX_WG_SIZE 288
-
 struct ggml_webgpu_get_rows_pipeline_key {
     ggml_type src_type;
     int       vectorized;
@@ -532,28 +540,28 @@ struct ggml_webgpu_get_rows_pipeline_key_hash {
         return seed;
     }
 };
+
+struct ggml_webgpu_get_rows_shader_lib_context {
+    ggml_webgpu_get_rows_pipeline_key key;
+    uint32_t max_wg_size;
+};
+
 inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_get_rows_shader(
-    pre_wgsl::Preprocessor & preprocessor,
-    const char *             shader_src,
-    ggml_type                src_type,
-    int                      vectorized) {
+    pre_wgsl::Preprocessor &                      preprocessor,
+    const char *                                  shader_src,
+    const ggml_webgpu_get_rows_shader_lib_context & context) {
     
     std::vector<std::string> defines;
     std::string variant = "get_rows";
-
-    printf("DEBUG: get_rows preprocessing - src_type=%d, vectorized=%d\n", src_type, vectorized);
-    printf("DEBUG: Checking src_type=%d against GGML_TYPE_IQ2_S=%d\n", src_type, GGML_TYPE_IQ2_S);
-
-    
     
     // Determine src type string and dst type string
     const char* type_str = nullptr;
     const char* dst_type_str = nullptr;
     uint32_t block_size = 1;
     
-    switch (src_type) {
+    switch (context.key.src_type) {
         case GGML_TYPE_F32:
-            if (vectorized) {
+            if (context.key.vectorized) {
                 defines.push_back("F32_VEC");
                 type_str = "vec4<f32>";
                 dst_type_str = "vec4<f32>";
@@ -581,9 +589,9 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_get_rows_shader(
             variant += "_i32";
             break;
         case GGML_TYPE_Q4_0:
-            type_str = "q4_0";  // Input packed data
-            dst_type_str = "f32";  // Output unpacked
-            block_size = 32;  // Q4_0 block size
+            type_str = "q4_0";
+            dst_type_str = "f32"; 
+            block_size = 32; 
             defines.push_back("BYTE_HELPERS");
             defines.push_back("Q4_0_T");
             defines.push_back("Q4_0");
@@ -624,6 +632,15 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_get_rows_shader(
             defines.push_back("Q8_0_T");
             defines.push_back("Q8_0");
             variant += "_q8_0";
+            break;
+        case GGML_TYPE_Q8_1:
+            type_str = "q8_1";
+            dst_type_str = "f32";
+            block_size = 32;
+            defines.push_back("BYTE_HELPERS");
+            defines.push_back("Q8_1_T");
+            defines.push_back("Q8_1");
+            variant += "_q8_1";
             break;
         case GGML_TYPE_Q2_K:
             type_str = "q2_k";
@@ -770,50 +787,33 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_get_rows_shader(
         default:
             break;
     }
-
-    printf("DEBUG: defines for src_type %d:\n", src_type);
-    for (const auto& def : defines) {
-        printf("  - %s\n", def.c_str());
-    }
     
     // Vectorized suffix
-    if (vectorized) {
+    if (context.key.vectorized) {
         variant += "_vec";
     }
     
     // Manual replacement of {{...}} placeholders
     std::string shader_with_replacements = shader_src;
     
-    auto replace_placeholder = [&](const std::string& key, const std::string& value) {
-        std::string pattern = "{{" + key + "}}";
-        size_t pos = 0;
-        while ((pos = shader_with_replacements.find(pattern, pos)) != std::string::npos) {
-            shader_with_replacements.replace(pos, pattern.length(), value);
-            pos += value.length();
-        }
-    };
-    
-    replace_placeholder("TYPE", type_str ? type_str : "f32");
-    replace_placeholder("DST_TYPE", dst_type_str ? dst_type_str : "f32");
-    replace_placeholder("BLOCK_SIZE", std::to_string(block_size));
-    replace_placeholder("WORKGROUP_SIZE", std::to_string(WEBGPU_MAX_WG_SIZE));
+    ggml_webgpu_replace_placeholder(shader_with_replacements, "TYPE", type_str ? type_str : "f32");
+    ggml_webgpu_replace_placeholder(shader_with_replacements, "DST_TYPE", dst_type_str ? dst_type_str : "f32");
+    ggml_webgpu_replace_placeholder(shader_with_replacements, "BLOCK_SIZE", std::to_string(block_size));
+    ggml_webgpu_replace_placeholder(shader_with_replacements, "WORKGROUP_SIZE", std::to_string(context.max_wg_size));
     
     ggml_webgpu_processed_shader result;
-    result.wgsl = preprocessor.preprocess(shader_with_replacements.c_str(), defines);
+    result.wgsl = preprocessor.preprocess(shader_with_replacements, defines);
     result.variant = variant;
-    result.decisions = nullptr;
+
+    // Create decisions structure to store workgroup size
+    ggml_webgpu_generic_shader_decisions * decisions = new ggml_webgpu_generic_shader_decisions();
+    decisions->wg_size = context.max_wg_size;
+    result.decisions = decisions;
     
     return result;
 }
-/** Matrix Multiplication **/
 
-// The number of subgroups in the M dimension
-#define WEBGPU_MUL_MAT_SUBGROUP_M        2
-// The number of subgroups in the N dimension
-#define WEBGPU_MUL_MAT_SUBGROUP_N        2
-// The number of subgroup matrices each subgroup accumulates over
-#define WEBGPU_MUL_MAT_SUBGROUP_MATRIX_M 4
-#define WEBGPU_MUL_MAT_SUBGROUP_MATRIX_N 2
+/** Matrix Multiplication **/
 
 struct ggml_webgpu_mul_mat_pipeline_key {
     ggml_type src0_type;
@@ -854,6 +854,12 @@ struct ggml_webgpu_mul_mat_shader_lib_context {
     uint32_t sg_mat_m;
     uint32_t sg_mat_n;
     uint32_t sg_mat_k;
+
+    // Subgroup configuration
+    uint32_t subgroup_m;           
+    uint32_t subgroup_n;           
+    uint32_t subgroup_matrix_m;    
+    uint32_t subgroup_matrix_n;    
     
     // For regular tile paths
     uint32_t tile_m;
@@ -919,14 +925,17 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
         default:
             break;
     }
+
+    // same for all types
+    shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
     
     switch (context.key.src0_type) {
         case GGML_TYPE_F32:
             src0_type_str = context.key.vectorized ? "vec4<f32>" : "f32";
-            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            
             block_size = 1;
             
-            // Add all possible defines
+            
             defines.push_back("FLOAT");
             defines.push_back("MUL_ACC_FLOAT");
             defines.push_back("INIT_SRC0_SHMEM_FLOAT");
@@ -937,10 +946,10 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
             
         case GGML_TYPE_F16:
             src0_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
-            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            
             block_size = 1;
             
-            // Add all possible defines
+            
             defines.push_back("FLOAT");
             defines.push_back("MUL_ACC_FLOAT");
             defines.push_back("INIT_SRC0_SHMEM_FLOAT");
@@ -951,12 +960,12 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
             
         case GGML_TYPE_Q4_0:
             src0_type_str = "f16";
-            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            
             block_size = 32;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("Q4_0_T");
             
-            // Add all possible defines
+            
             defines.push_back("Q4_0");
             defines.push_back("MUL_ACC_Q4_0");
             defines.push_back("INIT_SRC0_SHMEM_Q4_0");
@@ -967,12 +976,12 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
         
         case GGML_TYPE_Q4_1:
             src0_type_str = "q4_1";
-            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            
             block_size = 32;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("Q4_1_T");
             
-            // Add all possible defines
+            
             defines.push_back("Q4_1");
             defines.push_back("MUL_ACC_Q4_1");
             defines.push_back("INIT_SRC0_SHMEM_Q4_1");
@@ -983,12 +992,12 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
             
         case GGML_TYPE_Q5_0:
             src0_type_str = "q5_0";
-            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            
             block_size = 32;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("Q5_0_T");
             
-            // Add all possible defines
+            
             defines.push_back("Q5_0");
             defines.push_back("MUL_ACC_Q5_0");
             defines.push_back("INIT_SRC0_SHMEM_Q5_0");
@@ -999,12 +1008,12 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
             
         case GGML_TYPE_Q5_1:
             src0_type_str = "q5_1";
-            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            
             block_size = 32;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("Q5_1_T");
             
-            // Add all possible defines
+            
             defines.push_back("Q5_1");
             defines.push_back("MUL_ACC_Q5_1");
             defines.push_back("INIT_SRC0_SHMEM_Q5_1");
@@ -1015,12 +1024,12 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
             
         case GGML_TYPE_Q8_0:
             src0_type_str = "q8_0";
-            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            
             block_size = 32;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("Q8_0_T");
             
-            // Add all possible defines
+            
             defines.push_back("Q8_0");
             defines.push_back("MUL_ACC_Q8_0");
             defines.push_back("INIT_SRC0_SHMEM_Q8_0");
@@ -1031,12 +1040,12 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
             
         case GGML_TYPE_Q8_1:
             src0_type_str = "q8_1";
-            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            
             block_size = 32;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("Q8_1_T");
             
-            // Add all possible defines
+            
             defines.push_back("Q8_1");
             defines.push_back("MUL_ACC_Q8_1");
             defines.push_back("INIT_SRC0_SHMEM_Q8_1");
@@ -1047,12 +1056,12 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
             
         case GGML_TYPE_Q2_K:
             src0_type_str = "q2_k";
-            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            
             block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("Q2_K_T");
             
-            // Add all possible defines
+            
             defines.push_back("Q2_K");
             defines.push_back("MUL_ACC_Q2_K");
             defines.push_back("INIT_SRC0_SHMEM_Q2_K");
@@ -1063,12 +1072,12 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
             
         case GGML_TYPE_Q3_K:
             src0_type_str = "q3_k";
-            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            
             block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("Q3_K_T");
             
-            // Add all possible defines
+            
             defines.push_back("Q3_K");
             defines.push_back("MUL_ACC_Q3_K");
             defines.push_back("INIT_SRC0_SHMEM_Q3_K");
@@ -1079,13 +1088,13 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
             
         case GGML_TYPE_Q4_K:
             src0_type_str = "q4_k";
-            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            
             block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("Q4_K_T");
             defines.push_back("Q45_K_SCALE_MIN");
             
-            // Add all possible defines
+            
             defines.push_back("Q4_K");
             defines.push_back("MUL_ACC_Q4_K");
             defines.push_back("INIT_SRC0_SHMEM_Q4_K");
@@ -1096,13 +1105,13 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
             
         case GGML_TYPE_Q5_K:
             src0_type_str = "q5_k";
-            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            
             block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("Q5_K_T");
             defines.push_back("Q45_K_SCALE_MIN");
             
-            // Add all possible defines
+            
             defines.push_back("Q5_K");
             defines.push_back("MUL_ACC_Q5_K");
             defines.push_back("INIT_SRC0_SHMEM_Q5_K");
@@ -1113,12 +1122,12 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
             
         case GGML_TYPE_Q6_K:
             src0_type_str = "q6_k";
-            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            
             block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("Q6_K_T");
             
-            // Add all possible defines
+            
             defines.push_back("Q6_K");
             defines.push_back("MUL_ACC_Q6_K");
             defines.push_back("INIT_SRC0_SHMEM_Q6_K");
@@ -1129,14 +1138,14 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
             
         case GGML_TYPE_IQ2_XXS:
             src0_type_str = "iq2_xxs";
-            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            
             block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("IQ2_XXS_T");
             defines.push_back("IQ23_TABLES");
             defines.push_back("IQ2_XXS_GRID");
             
-            // Add all possible defines
+            
             defines.push_back("IQ2_XXS");
             defines.push_back("MUL_ACC_IQ2_XXS");
             defines.push_back("INIT_SRC0_SHMEM_IQ2_XXS");
@@ -1147,14 +1156,14 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
             
         case GGML_TYPE_IQ2_XS:
             src0_type_str = "iq2_xs";
-            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            
             block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("IQ2_XS_T");
             defines.push_back("IQ23_TABLES");
             defines.push_back("IQ2_XS_GRID");
             
-            // Add all possible defines
+            
             defines.push_back("IQ2_XS");
             defines.push_back("MUL_ACC_IQ2_XS");
             defines.push_back("INIT_SRC0_SHMEM_IQ2_XS");
@@ -1165,14 +1174,14 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
             
         case GGML_TYPE_IQ2_S:
             src0_type_str = "iq2_s";
-            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            
             block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("IQ2_S_T");
             defines.push_back("IQ23_TABLES");
             defines.push_back("IQ2_S_GRID");
             
-            // Add all possible defines
+            
             defines.push_back("IQ2_S");
             defines.push_back("MUL_ACC_IQ2_S");
             defines.push_back("INIT_SRC0_SHMEM_IQ2_S");
@@ -1183,14 +1192,14 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
             
         case GGML_TYPE_IQ3_XXS:
             src0_type_str = "iq3_xxs";
-            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            
             block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("IQ3_XXS_T");
             defines.push_back("IQ23_TABLES");
             defines.push_back("IQ3_XXS_GRID");
             
-            // Add all possible defines
+            
             defines.push_back("IQ3_XXS");
             defines.push_back("MUL_ACC_IQ3_XXS");
             defines.push_back("INIT_SRC0_SHMEM_IQ3_XXS");
@@ -1201,14 +1210,14 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
             
         case GGML_TYPE_IQ3_S:
             src0_type_str = "iq3_s";
-            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            
             block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("IQ3_S_T");
             defines.push_back("IQ23_TABLES");
             defines.push_back("IQ3_S_GRID");
             
-            // Add all possible defines
+            
             defines.push_back("IQ3_S");
             defines.push_back("MUL_ACC_IQ3_S");
             defines.push_back("INIT_SRC0_SHMEM_IQ3_S");
@@ -1219,13 +1228,13 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
             
         case GGML_TYPE_IQ1_S:
             src0_type_str = "iq1_s";
-            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            
             block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("IQ1_S_T");
             defines.push_back("IQ1_GRID");
             
-            // Add all possible defines
+            
             defines.push_back("IQ1_S");
             defines.push_back("MUL_ACC_IQ1_S");
             defines.push_back("INIT_SRC0_SHMEM_IQ1_S");
@@ -1236,13 +1245,13 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
             
         case GGML_TYPE_IQ1_M:
             src0_type_str = "iq1_m";
-            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            
             block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("IQ1_M_T");
             defines.push_back("IQ1_GRID");
             
-            // Add all possible defines
+            
             defines.push_back("IQ1_M");
             defines.push_back("MUL_ACC_IQ1_M");
             defines.push_back("INIT_SRC0_SHMEM_IQ1_M");
@@ -1253,13 +1262,13 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
             
         case GGML_TYPE_IQ4_NL:
             src0_type_str = "iq4_nl";
-            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            
             block_size = 32;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("IQ4_NL_T");
             defines.push_back("IQ4_GRID");
             
-            // Add all possible defines
+            
             defines.push_back("IQ4_NL");
             defines.push_back("MUL_ACC_IQ4_NL");
             defines.push_back("INIT_SRC0_SHMEM_IQ4_NL");
@@ -1270,13 +1279,13 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
             
         case GGML_TYPE_IQ4_XS:
             src0_type_str = "iq4_xs";
-            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            
             block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("IQ4_XS_T");
             defines.push_back("IQ4_GRID");
             
-            // Add all possible defines
+            
             defines.push_back("IQ4_XS");
             defines.push_back("MUL_ACC_IQ4_XS");
             defines.push_back("INIT_SRC0_SHMEM_IQ4_XS");
@@ -1289,7 +1298,7 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
             break;
     }
 
-    // Add VEC/SCALAR defines (these ARE mutually exclusive, so keep the ternary)
+    // Add VEC/SCALAR defines
     if (is_fast_path) {
         defines.push_back(context.key.vectorized ? "VEC" : "SCALAR");
         if (!context.key.is_vec) {
@@ -1310,43 +1319,32 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
     // Manual replacement of {{...}} placeholders before preprocessing
     std::string shader_with_replacements = shader_src;
     
-    // Helper lambda for replacing {{KEY}} with value
-    auto replace_placeholder = [&](const std::string& key, const std::string& value) {
-        std::string pattern = "{{" + key + "}}";
-        size_t pos = 0;
-        while ((pos = shader_with_replacements.find(pattern, pos)) != std::string::npos) {
-            shader_with_replacements.replace(pos, pattern.length(), value);
-            pos += value.length();
-        }
-    };
-    
-    // Replace all placeholders
-    replace_placeholder("VEC_SIZE", std::to_string(context.key.vectorized ? 4 : 1));
-    replace_placeholder("SRC0_TYPE", src0_type_str ? src0_type_str : "f32");
-    replace_placeholder("SRC1_TYPE", src1_type_str ? src1_type_str : "f32");
-    replace_placeholder("DST_TYPE", dst_type_str ? dst_type_str : "f32");
-    replace_placeholder("SHMEM_TYPE", shmem_type_str ? shmem_type_str : "f16");
-    replace_placeholder("WEBGPU_TILE_M", std::to_string(context.tile_m));
-    replace_placeholder("WEBGPU_TILE_N", std::to_string(context.tile_n));
+    // Replace {{placeholders}}
 
-    // Add BLOCK_SIZE replacement for non-fast-path quantized shaders
-    replace_placeholder("BLOCK_SIZE", std::to_string(block_size));
-    
-    // Add configuration based on kernel type
+    ggml_webgpu_replace_placeholder(shader_with_replacements, "VEC_SIZE", std::to_string(context.key.vectorized ? 4 : 1));
+    ggml_webgpu_replace_placeholder(shader_with_replacements, "SRC0_TYPE", src0_type_str ? src0_type_str : "f32");
+    ggml_webgpu_replace_placeholder(shader_with_replacements, "SRC1_TYPE", src1_type_str ? src1_type_str : "f32");
+    ggml_webgpu_replace_placeholder(shader_with_replacements, "DST_TYPE", dst_type_str ? dst_type_str : "f32");
+    ggml_webgpu_replace_placeholder(shader_with_replacements, "SHMEM_TYPE", shmem_type_str ? shmem_type_str : "f16");
+    ggml_webgpu_replace_placeholder(shader_with_replacements, "WEBGPU_TILE_M", std::to_string(context.tile_m));
+    ggml_webgpu_replace_placeholder(shader_with_replacements, "WEBGPU_TILE_N", std::to_string(context.tile_n));
+    ggml_webgpu_replace_placeholder(shader_with_replacements, "BLOCK_SIZE", std::to_string(block_size));
+
+    // Replace {{placeholders}} that only come up in mul_mat_subgroup_matrix
     if (context.key.use_subgroup_matrix) {
-        replace_placeholder("WEBGPU_MAX_SUBGROUP_SIZE", std::to_string(context.max_subgroup_size));
-        replace_placeholder("WEBGPU_TILE_K", std::to_string(context.tile_k));
-        replace_placeholder("WEBGPU_SUBGROUP_M", std::to_string(WEBGPU_MUL_MAT_SUBGROUP_M));
-        replace_placeholder("WEBGPU_SUBGROUP_N", std::to_string(WEBGPU_MUL_MAT_SUBGROUP_N));
-        replace_placeholder("WEBGPU_SUBGROUP_MATRIX_M", std::to_string(WEBGPU_MUL_MAT_SUBGROUP_MATRIX_M));
-        replace_placeholder("WEBGPU_SUBGROUP_MATRIX_N", std::to_string(WEBGPU_MUL_MAT_SUBGROUP_MATRIX_N));
-        replace_placeholder("WEBGPU_SG_MAT_M_SIZE", std::to_string(context.sg_mat_m));
-        replace_placeholder("WEBGPU_SG_MAT_N_SIZE", std::to_string(context.sg_mat_n));
-        replace_placeholder("WEBGPU_SG_MAT_K_SIZE", std::to_string(context.sg_mat_k));
+        ggml_webgpu_replace_placeholder(shader_with_replacements, "WEBGPU_MAX_SUBGROUP_SIZE", std::to_string(context.max_subgroup_size));
+        ggml_webgpu_replace_placeholder(shader_with_replacements, "WEBGPU_TILE_K", std::to_string(context.tile_k));
+        ggml_webgpu_replace_placeholder(shader_with_replacements, "WEBGPU_SUBGROUP_M", std::to_string(context.subgroup_m));
+        ggml_webgpu_replace_placeholder(shader_with_replacements, "WEBGPU_SUBGROUP_N", std::to_string(context.subgroup_n));
+        ggml_webgpu_replace_placeholder(shader_with_replacements, "WEBGPU_SUBGROUP_MATRIX_M", std::to_string(context.subgroup_matrix_m));
+        ggml_webgpu_replace_placeholder(shader_with_replacements, "WEBGPU_SUBGROUP_MATRIX_N", std::to_string(context.subgroup_matrix_n));
+        ggml_webgpu_replace_placeholder(shader_with_replacements, "WEBGPU_SG_MAT_M_SIZE", std::to_string(context.sg_mat_m));
+        ggml_webgpu_replace_placeholder(shader_with_replacements, "WEBGPU_SG_MAT_N_SIZE", std::to_string(context.sg_mat_n));
+        ggml_webgpu_replace_placeholder(shader_with_replacements, "WEBGPU_SG_MAT_K_SIZE", std::to_string(context.sg_mat_k));
     }
     
     ggml_webgpu_processed_shader result;
-    result.wgsl = preprocessor.preprocess(shader_with_replacements.c_str(), defines);
+    result.wgsl = preprocessor.preprocess(shader_with_replacements, defines);
     result.variant = variant;
     
     ggml_webgpu_mul_mat_shader_decisions * decisions = new ggml_webgpu_mul_mat_shader_decisions();
