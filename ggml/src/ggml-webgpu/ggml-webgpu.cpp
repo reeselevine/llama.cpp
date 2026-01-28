@@ -1150,26 +1150,6 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
                     shader_src = wgsl_mul_mat_reg_tile;
                 }
             }
-            
-            // if (shader_src) {
-            //     ggml_webgpu_processed_shader processed =
-            //         ggml_webgpu_preprocess_mul_mat_shader(ctx->p, shader_src, shader_lib_ctx);
-
-            //     std::vector<wgpu::ConstantEntry> constants;
-            //     if (shader_lib_ctx.key.is_vec) {
-            //         constants.push_back({nullptr, "WORKGROUP_SIZE", static_cast<double>(shader_lib_ctx.wg_size)});
-            //         constants.push_back({nullptr, "TILE_K", static_cast<double>(shader_lib_ctx.tile_k)});
-            //         constants.push_back({nullptr, "OUTPUTS_PER_WG", static_cast<double>(shader_lib_ctx.outputs_per_wg)});
-            //     } else if (shader_lib_ctx.key.register_tile) {
-            //         // mul_mat_reg_tile.wgsl overrides
-            //         constants.push_back({nullptr, "WORKGROUP_SIZE_M", static_cast<double>(shader_lib_ctx.wg_size_m)});
-            //         constants.push_back({nullptr, "WORKGROUP_SIZE_N", static_cast<double>(shader_lib_ctx.wg_size_n)});
-            //         constants.push_back({nullptr, "TILE_K", static_cast<double>(shader_lib_ctx.tile_k)});
-            //     }
-            //     pipeline = ggml_webgpu_create_pipeline(ctx->device, processed.wgsl.c_str(), processed.variant.c_str(), constants);
-            //     pipeline.context = processed.decisions;
-            //     ctx->mul_mat_pipelines.emplace(key, pipeline);
-            // }
 
             if (shader_src) {
                 ggml_webgpu_processed_shader processed =

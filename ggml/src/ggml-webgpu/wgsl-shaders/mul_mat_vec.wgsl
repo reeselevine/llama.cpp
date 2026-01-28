@@ -2,7 +2,6 @@
 enable f16;
 
 #include "common_decls.tmpl"
-#include "mul_mat_decls.tmpl"
 
 #ifdef VEC
 fn inner_dot(src0_val: {{SRC0_TYPE}}, src1_val: {{SRC1_TYPE}}) -> f32 {

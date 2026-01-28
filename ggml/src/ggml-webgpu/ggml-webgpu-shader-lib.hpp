@@ -885,10 +885,7 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
     std::vector<std::string> defines;
     std::string variant = "mul_mat";
 
-    printf("DEBUG: src0_type=%d, src1_type=%d\n", context.key.src0_type, context.key.src1_type);
-
-    // Check if this is non-fast-path (all three flags are false)
-    bool is_non_fast_path = !context.key.is_vec && !context.key.use_subgroup_matrix && !context.key.register_tile;
+    // printf("DEBUG: src0_type=%d, src1_type=%d\n", context.key.src0_type, context.key.src1_type);
 
     // Determine base variant name based on kernel type
     if (context.key.is_vec) {
@@ -904,6 +901,10 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
     const char* src1_type_str = nullptr;
     const char* dst_type_str = nullptr;
     const char* shmem_type_str = nullptr;
+
+    uint32_t block_size = 1;
+
+    bool is_fast_path = context.key.is_vec || context.key.use_subgroup_matrix || context.key.register_tile;
     
     // Map src1 type
     switch (context.key.src1_type) {
@@ -919,297 +920,387 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
             break;
     }
     
-    // Map src0 type and determine required decls
     switch (context.key.src0_type) {
         case GGML_TYPE_F32:
             src0_type_str = context.key.vectorized ? "vec4<f32>" : "f32";
             shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            block_size = 1;
             
-            if (is_non_fast_path) {
-                defines.push_back("FLOAT");
-            } else {
-                if (context.key.is_vec || context.key.use_subgroup_matrix || context.key.register_tile) {
-                    defines.push_back(context.key.vectorized ? "VEC" : "SCALAR");
-                    if (!context.key.is_vec) {
-                        defines.push_back(context.key.vectorized ? "SHMEM_VEC" : "SHMEM_SCALAR");
-                    }
-                }
-                if (context.key.is_vec) {
-                    defines.push_back("MUL_ACC_FLOAT");
-                } else {
-                    defines.push_back("INIT_SRC0_SHMEM_FLOAT");
-                    defines.push_back("INIT_SRC1_SHMEM_FLOAT");
-                }
-            }
+            // Add all possible defines
+            defines.push_back("FLOAT");
+            defines.push_back("MUL_ACC_FLOAT");
+            defines.push_back("INIT_SRC0_SHMEM_FLOAT");
+            defines.push_back("INIT_SRC1_SHMEM_FLOAT");
+            
             variant += "_f32";
             break;
             
         case GGML_TYPE_F16:
             src0_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
             shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            block_size = 1;
             
-            if (is_non_fast_path) {
-                defines.push_back("FLOAT");
-            } else {
-                if (context.key.is_vec || context.key.use_subgroup_matrix || context.key.register_tile) {
-                    defines.push_back(context.key.vectorized ? "VEC" : "SCALAR");
-                    if (!context.key.is_vec) {
-                        defines.push_back(context.key.vectorized ? "SHMEM_VEC" : "SHMEM_SCALAR");
-                    }
-                }
-                if (context.key.is_vec) {
-                    defines.push_back("MUL_ACC_FLOAT");
-                } else {
-                    defines.push_back("INIT_SRC0_SHMEM_FLOAT");
-                    defines.push_back("INIT_SRC1_SHMEM_FLOAT");
-                }
-            }
+            // Add all possible defines
+            defines.push_back("FLOAT");
+            defines.push_back("MUL_ACC_FLOAT");
+            defines.push_back("INIT_SRC0_SHMEM_FLOAT");
+            defines.push_back("INIT_SRC1_SHMEM_FLOAT");
+            
             variant += "_f16";
             break;
             
         case GGML_TYPE_Q4_0:
             src0_type_str = "f16";
             shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            block_size = 32;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("Q4_0_T");
             
-            if (is_non_fast_path) {
-                defines.push_back("Q4_0");
-            } else {
-                if (context.key.is_vec || context.key.use_subgroup_matrix || context.key.register_tile) {
-                    defines.push_back(context.key.vectorized ? "VEC" : "SCALAR");
-                    if (!context.key.is_vec) {
-                        defines.push_back(context.key.vectorized ? "SHMEM_VEC" : "SHMEM_SCALAR");
-                    }
-                }
-                if (context.key.is_vec) {
-                    defines.push_back("MUL_ACC_Q4_0");
-                } else {
-                    defines.push_back("INIT_SRC0_SHMEM_Q4_0");
-                    defines.push_back("INIT_SRC1_SHMEM_FLOAT");
-                }
-            }
+            // Add all possible defines
+            defines.push_back("Q4_0");
+            defines.push_back("MUL_ACC_Q4_0");
+            defines.push_back("INIT_SRC0_SHMEM_Q4_0");
+            defines.push_back("INIT_SRC1_SHMEM_FLOAT");
+            
             variant += "_q4_0";
             break;
         
         case GGML_TYPE_Q4_1:
             src0_type_str = "q4_1";
+            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            block_size = 32;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("Q4_1_T");
-            if (is_non_fast_path) {
-                defines.push_back("Q4_1");
-            }
+            
+            // Add all possible defines
+            defines.push_back("Q4_1");
+            defines.push_back("MUL_ACC_Q4_1");
+            defines.push_back("INIT_SRC0_SHMEM_Q4_1");
+            defines.push_back("INIT_SRC1_SHMEM_FLOAT");
+            
             variant += "_q4_1";
             break;
             
         case GGML_TYPE_Q5_0:
             src0_type_str = "q5_0";
+            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            block_size = 32;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("Q5_0_T");
-            if (is_non_fast_path) {
-                defines.push_back("Q5_0");
-            }
+            
+            // Add all possible defines
+            defines.push_back("Q5_0");
+            defines.push_back("MUL_ACC_Q5_0");
+            defines.push_back("INIT_SRC0_SHMEM_Q5_0");
+            defines.push_back("INIT_SRC1_SHMEM_FLOAT");
+            
             variant += "_q5_0";
             break;
             
         case GGML_TYPE_Q5_1:
             src0_type_str = "q5_1";
+            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            block_size = 32;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("Q5_1_T");
-            if (is_non_fast_path) {
-                defines.push_back("Q5_1");
-            }
+            
+            // Add all possible defines
+            defines.push_back("Q5_1");
+            defines.push_back("MUL_ACC_Q5_1");
+            defines.push_back("INIT_SRC0_SHMEM_Q5_1");
+            defines.push_back("INIT_SRC1_SHMEM_FLOAT");
+            
             variant += "_q5_1";
             break;
             
         case GGML_TYPE_Q8_0:
             src0_type_str = "q8_0";
+            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            block_size = 32;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("Q8_0_T");
-            if (is_non_fast_path) {
-                defines.push_back("Q8_0");
-            }
+            
+            // Add all possible defines
+            defines.push_back("Q8_0");
+            defines.push_back("MUL_ACC_Q8_0");
+            defines.push_back("INIT_SRC0_SHMEM_Q8_0");
+            defines.push_back("INIT_SRC1_SHMEM_FLOAT");
+            
             variant += "_q8_0";
             break;
             
         case GGML_TYPE_Q8_1:
             src0_type_str = "q8_1";
+            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            block_size = 32;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("Q8_1_T");
-            if (is_non_fast_path) {
-                defines.push_back("Q8_1");
-            }
+            
+            // Add all possible defines
+            defines.push_back("Q8_1");
+            defines.push_back("MUL_ACC_Q8_1");
+            defines.push_back("INIT_SRC0_SHMEM_Q8_1");
+            defines.push_back("INIT_SRC1_SHMEM_FLOAT");
+            
             variant += "_q8_1";
             break;
             
         case GGML_TYPE_Q2_K:
             src0_type_str = "q2_k";
+            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("Q2_K_T");
-            if (is_non_fast_path) {
-                defines.push_back("Q2_K");
-            }
+            
+            // Add all possible defines
+            defines.push_back("Q2_K");
+            defines.push_back("MUL_ACC_Q2_K");
+            defines.push_back("INIT_SRC0_SHMEM_Q2_K");
+            defines.push_back("INIT_SRC1_SHMEM_FLOAT");
+            
             variant += "_q2_k";
             break;
             
         case GGML_TYPE_Q3_K:
             src0_type_str = "q3_k";
+            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("Q3_K_T");
-            if (is_non_fast_path) {
-                defines.push_back("Q3_K");
-            }
+            
+            // Add all possible defines
+            defines.push_back("Q3_K");
+            defines.push_back("MUL_ACC_Q3_K");
+            defines.push_back("INIT_SRC0_SHMEM_Q3_K");
+            defines.push_back("INIT_SRC1_SHMEM_FLOAT");
+            
             variant += "_q3_k";
             break;
             
         case GGML_TYPE_Q4_K:
             src0_type_str = "q4_k";
+            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("Q4_K_T");
-            if (is_non_fast_path) {
-                defines.push_back("Q4_K");
-                defines.push_back("Q45_K_SCALE_MIN");
-            }
+            defines.push_back("Q45_K_SCALE_MIN");
+            
+            // Add all possible defines
+            defines.push_back("Q4_K");
+            defines.push_back("MUL_ACC_Q4_K");
+            defines.push_back("INIT_SRC0_SHMEM_Q4_K");
+            defines.push_back("INIT_SRC1_SHMEM_FLOAT");
+            
             variant += "_q4_k";
             break;
             
         case GGML_TYPE_Q5_K:
             src0_type_str = "q5_k";
+            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("Q5_K_T");
             defines.push_back("Q45_K_SCALE_MIN");
-            if (is_non_fast_path) {
-                defines.push_back("Q5_K");
-                defines.push_back("Q45_K_SCALE_MIN");
-            }
+            
+            // Add all possible defines
+            defines.push_back("Q5_K");
+            defines.push_back("MUL_ACC_Q5_K");
+            defines.push_back("INIT_SRC0_SHMEM_Q5_K");
+            defines.push_back("INIT_SRC1_SHMEM_FLOAT");
+            
             variant += "_q5_k";
             break;
             
         case GGML_TYPE_Q6_K:
             src0_type_str = "q6_k";
+            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("Q6_K_T");
-            if (is_non_fast_path) {
-                defines.push_back("Q6_K");
-            }
+            
+            // Add all possible defines
+            defines.push_back("Q6_K");
+            defines.push_back("MUL_ACC_Q6_K");
+            defines.push_back("INIT_SRC0_SHMEM_Q6_K");
+            defines.push_back("INIT_SRC1_SHMEM_FLOAT");
+            
             variant += "_q6_k";
             break;
             
         case GGML_TYPE_IQ2_XXS:
             src0_type_str = "iq2_xxs";
+            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("IQ2_XXS_T");
             defines.push_back("IQ23_TABLES");
             defines.push_back("IQ2_XXS_GRID");
-            if (is_non_fast_path) {
-                defines.push_back("IQ2_XXS");
-            }
+            
+            // Add all possible defines
+            defines.push_back("IQ2_XXS");
+            defines.push_back("MUL_ACC_IQ2_XXS");
+            defines.push_back("INIT_SRC0_SHMEM_IQ2_XXS");
+            defines.push_back("INIT_SRC1_SHMEM_FLOAT");
+            
             variant += "_iq2_xxs";
             break;
             
         case GGML_TYPE_IQ2_XS:
             src0_type_str = "iq2_xs";
+            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("IQ2_XS_T");
             defines.push_back("IQ23_TABLES");
             defines.push_back("IQ2_XS_GRID");
-            if (is_non_fast_path) {
-                defines.push_back("IQ2_XS");
-            }
+            
+            // Add all possible defines
+            defines.push_back("IQ2_XS");
+            defines.push_back("MUL_ACC_IQ2_XS");
+            defines.push_back("INIT_SRC0_SHMEM_IQ2_XS");
+            defines.push_back("INIT_SRC1_SHMEM_FLOAT");
+            
             variant += "_iq2_xs";
             break;
             
         case GGML_TYPE_IQ2_S:
             src0_type_str = "iq2_s";
+            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("IQ2_S_T");
             defines.push_back("IQ23_TABLES");
             defines.push_back("IQ2_S_GRID");
-            if (is_non_fast_path) {
-                defines.push_back("IQ2_S");
-            }
+            
+            // Add all possible defines
+            defines.push_back("IQ2_S");
+            defines.push_back("MUL_ACC_IQ2_S");
+            defines.push_back("INIT_SRC0_SHMEM_IQ2_S");
+            defines.push_back("INIT_SRC1_SHMEM_FLOAT");
+            
             variant += "_iq2_s";
             break;
             
         case GGML_TYPE_IQ3_XXS:
             src0_type_str = "iq3_xxs";
+            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("IQ3_XXS_T");
             defines.push_back("IQ23_TABLES");
             defines.push_back("IQ3_XXS_GRID");
-            if (is_non_fast_path) {
-                defines.push_back("IQ3_XXS");
-            }
+            
+            // Add all possible defines
+            defines.push_back("IQ3_XXS");
+            defines.push_back("MUL_ACC_IQ3_XXS");
+            defines.push_back("INIT_SRC0_SHMEM_IQ3_XXS");
+            defines.push_back("INIT_SRC1_SHMEM_FLOAT");
+            
             variant += "_iq3_xxs";
             break;
             
         case GGML_TYPE_IQ3_S:
             src0_type_str = "iq3_s";
+            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("IQ3_S_T");
             defines.push_back("IQ23_TABLES");
             defines.push_back("IQ3_S_GRID");
-            if (is_non_fast_path) {
-                defines.push_back("IQ3_S");
-            }
+            
+            // Add all possible defines
+            defines.push_back("IQ3_S");
+            defines.push_back("MUL_ACC_IQ3_S");
+            defines.push_back("INIT_SRC0_SHMEM_IQ3_S");
+            defines.push_back("INIT_SRC1_SHMEM_FLOAT");
+            
             variant += "_iq3_s";
             break;
             
         case GGML_TYPE_IQ1_S:
             src0_type_str = "iq1_s";
+            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("IQ1_S_T");
             defines.push_back("IQ1_GRID");
-            if (is_non_fast_path) {
-                defines.push_back("IQ1_S");
-            }
+            
+            // Add all possible defines
+            defines.push_back("IQ1_S");
+            defines.push_back("MUL_ACC_IQ1_S");
+            defines.push_back("INIT_SRC0_SHMEM_IQ1_S");
+            defines.push_back("INIT_SRC1_SHMEM_FLOAT");
+            
             variant += "_iq1_s";
             break;
             
         case GGML_TYPE_IQ1_M:
             src0_type_str = "iq1_m";
+            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("IQ1_M_T");
             defines.push_back("IQ1_GRID");
-            if (is_non_fast_path) {
-                defines.push_back("IQ1_M");
-            }
+            
+            // Add all possible defines
+            defines.push_back("IQ1_M");
+            defines.push_back("MUL_ACC_IQ1_M");
+            defines.push_back("INIT_SRC0_SHMEM_IQ1_M");
+            defines.push_back("INIT_SRC1_SHMEM_FLOAT");
+            
             variant += "_iq1_m";
             break;
             
         case GGML_TYPE_IQ4_NL:
             src0_type_str = "iq4_nl";
+            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            block_size = 32;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("IQ4_NL_T");
             defines.push_back("IQ4_GRID");
-            if (is_non_fast_path) {
-                defines.push_back("IQ4_NL");
-            }
+            
+            // Add all possible defines
+            defines.push_back("IQ4_NL");
+            defines.push_back("MUL_ACC_IQ4_NL");
+            defines.push_back("INIT_SRC0_SHMEM_IQ4_NL");
+            defines.push_back("INIT_SRC1_SHMEM_FLOAT");
+            
             variant += "_iq4_nl";
             break;
             
         case GGML_TYPE_IQ4_XS:
             src0_type_str = "iq4_xs";
+            shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+            block_size = 256;
             defines.push_back("BYTE_HELPERS");
             defines.push_back("IQ4_XS_T");
             defines.push_back("IQ4_GRID");
-            if (is_non_fast_path) {
-                defines.push_back("IQ4_XS");
-            }
+            
+            // Add all possible defines
+            defines.push_back("IQ4_XS");
+            defines.push_back("MUL_ACC_IQ4_XS");
+            defines.push_back("INIT_SRC0_SHMEM_IQ4_XS");
+            defines.push_back("INIT_SRC1_SHMEM_FLOAT");
+            
             variant += "_iq4_xs";
             break;
             
         default:
             break;
     }
-    
-    printf("DEBUG: Before appending src1 type: variant='%s', src1_type=%d\n", 
-       variant.c_str(), context.key.src1_type);
+
+    // Add VEC/SCALAR defines (these ARE mutually exclusive, so keep the ternary)
+    if (is_fast_path) {
+        defines.push_back(context.key.vectorized ? "VEC" : "SCALAR");
+        if (!context.key.is_vec) {
+            defines.push_back(context.key.vectorized ? "SHMEM_VEC" : "SHMEM_SCALAR");
+        }
+    }
 
     // Append src1 type
     variant += std::string("_") + (context.key.src1_type == GGML_TYPE_F32 ? "f32" : "f16");
 
-    printf("DEBUG: After appending src1 type: variant='%s'\n", variant.c_str());
+    // printf("DEBUG: After appending src1 type: variant='%s'\n", variant.c_str());
     
     // Vectorized suffix
     if (context.key.vectorized) {
@@ -1239,38 +1330,6 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
     replace_placeholder("WEBGPU_TILE_N", std::to_string(context.tile_n));
 
     // Add BLOCK_SIZE replacement for non-fast-path quantized shaders
-    uint32_t block_size = 1;
-    switch (context.key.src0_type) {
-        case GGML_TYPE_Q4_0:
-        case GGML_TYPE_Q4_1:
-        case GGML_TYPE_Q5_0:
-        case GGML_TYPE_Q5_1:
-        case GGML_TYPE_Q8_0:
-        case GGML_TYPE_Q8_1:
-            block_size = 32;
-            break;
-        case GGML_TYPE_Q2_K:
-        case GGML_TYPE_Q3_K:
-        case GGML_TYPE_Q4_K:
-        case GGML_TYPE_Q5_K:
-        case GGML_TYPE_Q6_K:
-        case GGML_TYPE_IQ2_XXS:
-        case GGML_TYPE_IQ2_XS:
-        case GGML_TYPE_IQ2_S:
-        case GGML_TYPE_IQ3_XXS:
-        case GGML_TYPE_IQ3_S:
-        case GGML_TYPE_IQ1_S:
-        case GGML_TYPE_IQ1_M:
-        case GGML_TYPE_IQ4_XS:
-            block_size = 256;
-            break;
-        case GGML_TYPE_IQ4_NL:
-            block_size = 32;
-            break;
-        default:
-            block_size = 1;
-            break;
-    }
     replace_placeholder("BLOCK_SIZE", std::to_string(block_size));
     
     // Add configuration based on kernel type

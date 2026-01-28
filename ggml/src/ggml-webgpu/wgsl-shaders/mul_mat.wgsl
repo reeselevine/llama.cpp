@@ -1,7 +1,6 @@
 enable f16;
 
 #include "common_decls.tmpl"
-#include "mul_mat_decls.tmpl"
 
 #ifdef FLOAT
 fn multiply_add(src0_idx_base: u32, src1_idx_base: u32, offset: u32) -> f32 {
