@@ -981,7 +981,7 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
     break;
 
   case GGML_TYPE_Q4_0:
-    src0_type_str = "f16";
+    src0_type_str = "q4_0";
 
     block_size = 32;
     defines.push_back("BYTE_HELPERS");
@@ -1302,8 +1302,18 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
 
   // Add VEC/SCALAR defines
   if (is_fast_path) {
-    defines.push_back(context.key.vectorized ? "VEC" : "SCALAR");
-    if (!context.key.is_vec) {
+    // if quantized type and vectorized, need to use f16 instead of the
+    // quantized type
+    if (context.key.src0_type != GGML_TYPE_F32 &&
+        context.key.src0_type != GGML_TYPE_F16) {
+      src0_type_str = "f16";
+    }
+
+    if (context.key.is_vec) {
+      defines.push_back(context.key.vectorized ? "VEC" : "SCALAR");
+    } else {
+      // mul_mat_reg_tile and mul_mat_vec need to add normal and shmem versions
+      defines.push_back(context.key.vectorized ? "VEC" : "SCALAR");
       defines.push_back(context.key.vectorized ? "SHMEM_VEC" : "SHMEM_SCALAR");
     }
   }
