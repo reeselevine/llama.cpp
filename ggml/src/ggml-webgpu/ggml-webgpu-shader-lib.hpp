@@ -790,7 +790,7 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_get_rows_shader(
   case GGML_TYPE_IQ4_NL:
     type_str = "iq4_nl";
     dst_type_str = "f32";
-    block_size = 256;
+    block_size = 32;
     defines.push_back("BYTE_HELPERS");
     defines.push_back("IQ4_NL_T");
     defines.push_back("IQ4_NL");
@@ -915,9 +915,6 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
 
   std::vector<std::string> defines;
   std::string variant = "mul_mat";
-
-  // printf("DEBUG: src0_type=%d, src1_type=%d\n", context.key.src0_type,
-  // context.key.src1_type);
 
   // Determine base variant name based on kernel type
   if (context.key.is_vec) {

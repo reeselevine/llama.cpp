@@ -1352,7 +1352,8 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context &ctx,
     uint32_t total_wg = output_groups * batches;
     wg_x = total_wg % ctx->limits.maxComputeWorkgroupsPerDimension;
     wg_y = CEIL_DIV(total_wg, ctx->limits.maxComputeWorkgroupsPerDimension);
-  } else {
+  } else if (use_fast) {
+    // Fast-path tiled/subgroup calculations
     uint32_t wg_m, wg_n;
     if (decisions.use_subgroup_matrix) {
       uint32_t wg_m_sg_tile = WEBGPU_MUL_MAT_SUBGROUP_M *
@@ -1368,6 +1369,11 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context &ctx,
       wg_n = CEIL_DIV(dst->ne[1], tile_n_s);
     }
     wg_x = wg_m * wg_n * dst->ne[2] * dst->ne[3];
+  } else {
+    // Non-fast-path quantized shaders (Q2_K, Q4_K, etc.)
+    wg_x = CEIL_DIV(dst->ne[0] * dst->ne[1] * dst->ne[2] * dst->ne[3],
+                    WEBGPU_MUL_MAT_WG_SIZE);
+    wg_y = 1;
   }
 
   return ggml_backend_webgpu_build(ctx, pipeline, params, entries, wg_x, wg_y);
