@@ -1186,6 +1186,17 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context &ctx,
     case GGML_TYPE_F32:
     case GGML_TYPE_F16:
     case GGML_TYPE_Q4_0:
+    case GGML_TYPE_Q4_1:
+    case GGML_TYPE_Q5_0:
+    case GGML_TYPE_Q5_1:
+    case GGML_TYPE_Q8_0:
+    case GGML_TYPE_Q8_1:
+    case GGML_TYPE_Q2_K:
+    case GGML_TYPE_Q3_K:
+    case GGML_TYPE_Q4_K:
+    case GGML_TYPE_Q5_K:
+    case GGML_TYPE_Q6_K:
+      // For quantized types: only use fast path for non-vec (tiled) operations
       use_fast = true;
       break;
     default:
@@ -1350,8 +1361,14 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context &ctx,
     uint32_t batches = dst->ne[2] * dst->ne[3];
     uint32_t output_groups = CEIL_DIV(dst->ne[0], decisions.outputs_per_wg);
     uint32_t total_wg = output_groups * batches;
-    wg_x = total_wg % ctx->limits.maxComputeWorkgroupsPerDimension;
-    wg_y = CEIL_DIV(total_wg, ctx->limits.maxComputeWorkgroupsPerDimension);
+
+    if (total_wg <= ctx->limits.maxComputeWorkgroupsPerDimension) {
+      wg_x = total_wg;
+      wg_y = 1;
+    } else {
+      wg_x = ctx->limits.maxComputeWorkgroupsPerDimension;
+      wg_y = CEIL_DIV(total_wg, ctx->limits.maxComputeWorkgroupsPerDimension);
+    }
   } else if (use_fast) {
     // Fast-path tiled/subgroup calculations
     uint32_t wg_m, wg_n;
