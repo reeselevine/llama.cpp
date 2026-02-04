@@ -34,9 +34,10 @@ struct MulMatParams {
     broadcast3: u32
 };
 
-@group(0) @binding(0) var<storage, read_write> src0: array<{{SRC0_TYPE}}>; // M rows, K columns
-@group(0) @binding(1) var<storage, read_write> src1: array<{{SRC1_TYPE}}>; // K rows, N columns (transposed)
-@group(0) @binding(2) var<storage, read_write> dst: array<{{DST_TYPE}}>; // M rows, N columns (transposed)
+// SRC0_TYPE and SRC1_TYPE are defined in mul_mat_decls, which is included
+@group(0) @binding(0) var<storage, read_write> src0: array<SRC0_TYPE>; // M rows, K columns
+@group(0) @binding(1) var<storage, read_write> src1: array<SRC1_TYPE>; // K rows, N columns (transposed)
+@group(0) @binding(2) var<storage, read_write> dst: array<DST_TYPE>; // M rows, N columns (transposed)
 
 @group(0) @binding(3) var<uniform> params: MulMatParams;
 
@@ -47,9 +48,9 @@ fn get_local_m(thread_id: u32) -> u32 {
     return thread_id % WORKGROUP_SIZE_M;
 }
 
-// TILE_M must be multiple of 4 for vec4 loads
-const TILE_M = {{WEBGPU_TILE_M}}u;
-const TILE_N = {{WEBGPU_TILE_N}}u;
+// // TILE_M must be multiple of 4 for vec4 loads
+// const TILE_M = {{WEBGPU_TILE_M}}u;
+// const TILE_N = {{WEBGPU_TILE_N}}u;
 
 override WORKGROUP_SIZE_M: u32;
 override WORKGROUP_SIZE_N: u32;
@@ -135,11 +136,11 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
     for (var tn = 0u; tn < TILE_N; tn++) {
         let global_col = output_col_base + tn;
         if (global_col < params.n) {
-            for (var tm = 0u; tm < TILE_M; tm += {{VEC_SIZE}}) {
+            for (var tm = 0u; tm < TILE_M; tm += VEC_SIZE) {
                 let global_row = output_row_base + tm;
                 if (global_row < params.m) {
                     let dst_idx = dst_batch_offset + global_col * params.m + global_row;
-                    dst[dst_idx/{{VEC_SIZE}}] = store_val(acc, tn, tm);
+                    dst[dst_idx/VEC_SIZE] = store_val(acc, tn, tm);
                 }
             }
         }

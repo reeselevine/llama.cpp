@@ -17,6 +17,34 @@
 
 #define GGML_WEBGPU_ARGSORT_MERGE_MAX_WG_SIZE 512u
 
+// Matrix multiplication parameters
+
+// Register tiling parameters
+#define WEBGPU_MUL_MAT_TILE_M 8
+#define WEBGPU_MUL_MAT_TILE_N 8
+#define WEBGPU_MUL_MAT_WG_SIZE_M 8
+#define WEBGPU_MUL_MAT_WG_SIZE_N 8
+#define WEBGPU_MUL_MAT_TILE_K 32
+
+// Subgroup matrix parameters
+// The number of subgroups in the M dimension
+#define WEBGPU_MUL_MAT_SUBGROUP_M 2
+// The number of subgroups in the N dimension
+#define WEBGPU_MUL_MAT_SUBGROUP_N 2
+// The number of subgroup matrices each subgroup accumulates over
+#define WEBGPU_MUL_MAT_SUBGROUP_MATRIX_M 4
+#define WEBGPU_MUL_MAT_SUBGROUP_MATRIX_N 2
+
+// Matrix-vector multiplication parameters
+#define WEBGPU_MUL_MAT_VEC_WG_SIZE 256
+// Must be multiple of 4 to work with vectorized paths, and must divide
+// mul_mat_vec wg size
+#define WEBGPU_MUL_MAT_VEC_OUTPUTS_PER_WG 64
+#define WEBGPU_MUL_MAT_VEC_TILE_K 256
+
+#define WEBGPU_MAX_WG_SIZE 288
+#define WEBGPU_MUL_MAT_WG_SIZE 256
+
 // helper function for replacing {{PLACEHOLDERS}}
 inline void ggml_webgpu_replace_placeholder(std::string &shader_code,
                                             const std::string &key,
@@ -880,23 +908,6 @@ struct ggml_webgpu_mul_mat_shader_lib_context {
   uint32_t sg_mat_m;
   uint32_t sg_mat_n;
   uint32_t sg_mat_k;
-
-  // Subgroup configuration
-  uint32_t subgroup_m;
-  uint32_t subgroup_n;
-  uint32_t subgroup_matrix_m;
-  uint32_t subgroup_matrix_n;
-
-  // For regular tile paths
-  uint32_t tile_m;
-  uint32_t tile_n;
-  uint32_t tile_k;
-  uint32_t wg_size_m;
-  uint32_t wg_size_n;
-
-  // For vec paths
-  uint32_t wg_size;
-  uint32_t outputs_per_wg;
 };
 
 struct ggml_webgpu_mul_mat_shader_decisions {
@@ -907,6 +918,18 @@ struct ggml_webgpu_mul_mat_shader_decisions {
   uint32_t outputs_per_wg;
   int is_vec;
   int use_subgroup_matrix;
+
+  // Add new fields for all the parameters
+  uint32_t tile_m;
+  uint32_t tile_n;
+
+  // Subgroup matrix parameters
+  uint32_t subgroup_m;
+  uint32_t subgroup_n;
+  uint32_t subgroup_matrix_m;
+  uint32_t subgroup_matrix_n;
+
+  uint32_t mul_mat_wg_size;
 };
 
 inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
@@ -931,20 +954,20 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
   const char *dst_type_str = nullptr;
   const char *shmem_type_str = nullptr;
 
-  uint32_t block_size = 1;
-
   bool is_fast_path = context.key.is_vec || context.key.use_subgroup_matrix ||
                       context.key.register_tile;
 
-  // Map src1 type
+  // src1 type
   switch (context.key.src1_type) {
   case GGML_TYPE_F32:
     src1_type_str = context.key.vectorized ? "vec4<f32>" : "f32";
     dst_type_str = context.key.vectorized ? "vec4<f32>" : "f32";
+    defines.push_back("SRC1_F32");
     break;
   case GGML_TYPE_F16:
     src1_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
     dst_type_str = context.key.vectorized ? "vec4<f32>" : "f32";
+    defines.push_back("SRC1_F16");
     break;
   default:
     break;
@@ -953,16 +976,22 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
   // same for all types
   shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
 
+  // src0 type
+  const struct ggml_type_traits *src0_type_traits =
+      ggml_get_type_traits(context.key.src0_type);
+  src0_type_str = src0_type_traits->type_name;
+
+  // for f32 and f16, account for vectorized src0 types
   switch (context.key.src0_type) {
   case GGML_TYPE_F32:
     src0_type_str = context.key.vectorized ? "vec4<f32>" : "f32";
-
-    block_size = 1;
 
     defines.push_back("FLOAT");
     defines.push_back("MUL_ACC_FLOAT");
     defines.push_back("INIT_SRC0_SHMEM_FLOAT");
     defines.push_back("INIT_SRC1_SHMEM_FLOAT");
+
+    defines.push_back("SRC0_F32");
 
     variant += "_f32";
     break;
@@ -970,350 +999,60 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
   case GGML_TYPE_F16:
     src0_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
 
-    block_size = 1;
-
     defines.push_back("FLOAT");
     defines.push_back("MUL_ACC_FLOAT");
     defines.push_back("INIT_SRC0_SHMEM_FLOAT");
     defines.push_back("INIT_SRC1_SHMEM_FLOAT");
 
+    defines.push_back("SRC0_F16");
+
     variant += "_f16";
-    break;
 
-  case GGML_TYPE_Q4_0:
-    src0_type_str = "q4_0";
-
-    block_size = 32;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("Q4_0_T");
-
-    defines.push_back("Q4_0");
-    defines.push_back("MUL_ACC_Q4_0");
-    defines.push_back("INIT_SRC0_SHMEM_Q4_0");
-    defines.push_back("INIT_SRC1_SHMEM_FLOAT");
-
-    variant += "_q4_0";
-    break;
-
-  case GGML_TYPE_Q4_1:
-    src0_type_str = "q4_1";
-
-    block_size = 32;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("Q4_1_T");
-
-    defines.push_back("Q4_1");
-    defines.push_back("MUL_ACC_Q4_1");
-    defines.push_back("INIT_SRC0_SHMEM_Q4_1");
-    defines.push_back("INIT_SRC1_SHMEM_FLOAT");
-
-    variant += "_q4_1";
-    break;
-
-  case GGML_TYPE_Q5_0:
-    src0_type_str = "q5_0";
-
-    block_size = 32;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("Q5_0_T");
-
-    defines.push_back("Q5_0");
-    defines.push_back("MUL_ACC_Q5_0");
-    defines.push_back("INIT_SRC0_SHMEM_Q5_0");
-    defines.push_back("INIT_SRC1_SHMEM_FLOAT");
-
-    variant += "_q5_0";
-    break;
-
-  case GGML_TYPE_Q5_1:
-    src0_type_str = "q5_1";
-
-    block_size = 32;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("Q5_1_T");
-
-    defines.push_back("Q5_1");
-    defines.push_back("MUL_ACC_Q5_1");
-    defines.push_back("INIT_SRC0_SHMEM_Q5_1");
-    defines.push_back("INIT_SRC1_SHMEM_FLOAT");
-
-    variant += "_q5_1";
-    break;
-
-  case GGML_TYPE_Q8_0:
-    src0_type_str = "q8_0";
-
-    block_size = 32;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("Q8_0_T");
-
-    defines.push_back("Q8_0");
-    defines.push_back("MUL_ACC_Q8_0");
-    defines.push_back("INIT_SRC0_SHMEM_Q8_0");
-    defines.push_back("INIT_SRC1_SHMEM_FLOAT");
-
-    variant += "_q8_0";
-    break;
-
-  case GGML_TYPE_Q8_1:
-    src0_type_str = "q8_1";
-
-    block_size = 32;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("Q8_1_T");
-
-    defines.push_back("Q8_1");
-    defines.push_back("MUL_ACC_Q8_1");
-    defines.push_back("INIT_SRC0_SHMEM_Q8_1");
-    defines.push_back("INIT_SRC1_SHMEM_FLOAT");
-
-    variant += "_q8_1";
-    break;
-
-  case GGML_TYPE_Q2_K:
-    src0_type_str = "q2_k";
-
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("Q2_K_T");
-
-    defines.push_back("Q2_K");
-    defines.push_back("MUL_ACC_Q2_K");
-    defines.push_back("INIT_SRC0_SHMEM_Q2_K");
-    defines.push_back("INIT_SRC1_SHMEM_FLOAT");
-
-    variant += "_q2_k";
-    break;
-
-  case GGML_TYPE_Q3_K:
-    src0_type_str = "q3_k";
-
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("Q3_K_T");
-
-    defines.push_back("Q3_K");
-    defines.push_back("MUL_ACC_Q3_K");
-    defines.push_back("INIT_SRC0_SHMEM_Q3_K");
-    defines.push_back("INIT_SRC1_SHMEM_FLOAT");
-
-    variant += "_q3_k";
-    break;
-
-  case GGML_TYPE_Q4_K:
-    src0_type_str = "q4_k";
-
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("Q4_K_T");
-    defines.push_back("Q45_K_SCALE_MIN");
-
-    defines.push_back("Q4_K");
-    defines.push_back("MUL_ACC_Q4_K");
-    defines.push_back("INIT_SRC0_SHMEM_Q4_K");
-    defines.push_back("INIT_SRC1_SHMEM_FLOAT");
-
-    variant += "_q4_k";
-    break;
-
-  case GGML_TYPE_Q5_K:
-    src0_type_str = "q5_k";
-
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("Q5_K_T");
-    defines.push_back("Q45_K_SCALE_MIN");
-
-    defines.push_back("Q5_K");
-    defines.push_back("MUL_ACC_Q5_K");
-    defines.push_back("INIT_SRC0_SHMEM_Q5_K");
-    defines.push_back("INIT_SRC1_SHMEM_FLOAT");
-
-    variant += "_q5_k";
-    break;
-
-  case GGML_TYPE_Q6_K:
-    src0_type_str = "q6_k";
-
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("Q6_K_T");
-
-    defines.push_back("Q6_K");
-    defines.push_back("MUL_ACC_Q6_K");
-    defines.push_back("INIT_SRC0_SHMEM_Q6_K");
-    defines.push_back("INIT_SRC1_SHMEM_FLOAT");
-
-    variant += "_q6_k";
-    break;
-
-  case GGML_TYPE_IQ2_XXS:
-    src0_type_str = "iq2_xxs";
-
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("IQ2_XXS_T");
-    defines.push_back("IQ23_TABLES");
-    defines.push_back("IQ2_XXS_GRID");
-
-    defines.push_back("IQ2_XXS");
-    defines.push_back("MUL_ACC_IQ2_XXS");
-    defines.push_back("INIT_SRC0_SHMEM_IQ2_XXS");
-    defines.push_back("INIT_SRC1_SHMEM_FLOAT");
-
-    variant += "_iq2_xxs";
-    break;
-
-  case GGML_TYPE_IQ2_XS:
-    src0_type_str = "iq2_xs";
-
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("IQ2_XS_T");
-    defines.push_back("IQ23_TABLES");
-    defines.push_back("IQ2_XS_GRID");
-
-    defines.push_back("IQ2_XS");
-    defines.push_back("MUL_ACC_IQ2_XS");
-    defines.push_back("INIT_SRC0_SHMEM_IQ2_XS");
-    defines.push_back("INIT_SRC1_SHMEM_FLOAT");
-
-    variant += "_iq2_xs";
-    break;
-
-  case GGML_TYPE_IQ2_S:
-    src0_type_str = "iq2_s";
-
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("IQ2_S_T");
-    defines.push_back("IQ23_TABLES");
-    defines.push_back("IQ2_S_GRID");
-
-    defines.push_back("IQ2_S");
-    defines.push_back("MUL_ACC_IQ2_S");
-    defines.push_back("INIT_SRC0_SHMEM_IQ2_S");
-    defines.push_back("INIT_SRC1_SHMEM_FLOAT");
-
-    variant += "_iq2_s";
-    break;
-
-  case GGML_TYPE_IQ3_XXS:
-    src0_type_str = "iq3_xxs";
-
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("IQ3_XXS_T");
-    defines.push_back("IQ23_TABLES");
-    defines.push_back("IQ3_XXS_GRID");
-
-    defines.push_back("IQ3_XXS");
-    defines.push_back("MUL_ACC_IQ3_XXS");
-    defines.push_back("INIT_SRC0_SHMEM_IQ3_XXS");
-    defines.push_back("INIT_SRC1_SHMEM_FLOAT");
-
-    variant += "_iq3_xxs";
-    break;
-
-  case GGML_TYPE_IQ3_S:
-    src0_type_str = "iq3_s";
-
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("IQ3_S_T");
-    defines.push_back("IQ23_TABLES");
-    defines.push_back("IQ3_S_GRID");
-
-    defines.push_back("IQ3_S");
-    defines.push_back("MUL_ACC_IQ3_S");
-    defines.push_back("INIT_SRC0_SHMEM_IQ3_S");
-    defines.push_back("INIT_SRC1_SHMEM_FLOAT");
-
-    variant += "_iq3_s";
-    break;
-
-  case GGML_TYPE_IQ1_S:
-    src0_type_str = "iq1_s";
-
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("IQ1_S_T");
-    defines.push_back("IQ1_GRID");
-
-    defines.push_back("IQ1_S");
-    defines.push_back("MUL_ACC_IQ1_S");
-    defines.push_back("INIT_SRC0_SHMEM_IQ1_S");
-    defines.push_back("INIT_SRC1_SHMEM_FLOAT");
-
-    variant += "_iq1_s";
-    break;
-
-  case GGML_TYPE_IQ1_M:
-    src0_type_str = "iq1_m";
-
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("IQ1_M_T");
-    defines.push_back("IQ1_GRID");
-
-    defines.push_back("IQ1_M");
-    defines.push_back("MUL_ACC_IQ1_M");
-    defines.push_back("INIT_SRC0_SHMEM_IQ1_M");
-    defines.push_back("INIT_SRC1_SHMEM_FLOAT");
-
-    variant += "_iq1_m";
-    break;
-
-  case GGML_TYPE_IQ4_NL:
-    src0_type_str = "iq4_nl";
-
-    block_size = 32;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("IQ4_NL_T");
-    defines.push_back("IQ4_GRID");
-
-    defines.push_back("IQ4_NL");
-    defines.push_back("MUL_ACC_IQ4_NL");
-    defines.push_back("INIT_SRC0_SHMEM_IQ4_NL");
-    defines.push_back("INIT_SRC1_SHMEM_FLOAT");
-
-    variant += "_iq4_nl";
-    break;
-
-  case GGML_TYPE_IQ4_XS:
-    src0_type_str = "iq4_xs";
-
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("IQ4_XS_T");
-    defines.push_back("IQ4_GRID");
-
-    defines.push_back("IQ4_XS");
-    defines.push_back("MUL_ACC_IQ4_XS");
-    defines.push_back("INIT_SRC0_SHMEM_IQ4_XS");
-    defines.push_back("INIT_SRC1_SHMEM_FLOAT");
-
-    variant += "_iq4_xs";
     break;
 
   default:
+    // convert name to upper case for defines
+    std::string type_upper = src0_type_str;
+    std::transform(type_upper.begin(), type_upper.end(), type_upper.begin(),
+                   ::toupper);
+
+    // push back defines for quantized types
+    defines.push_back("BYTE_HELPERS");
+    defines.push_back(type_upper + "_T");
+
+    defines.push_back(type_upper);
+    defines.push_back("MUL_ACC_" + type_upper);
+    defines.push_back("INIT_SRC0_SHMEM_" + type_upper);
+    defines.push_back("INIT_SRC1_SHMEM_FLOAT");
+
+    // for q4_k and q5_k
+    defines.push_back(type_upper + "_SCALE_MIN");
+
+    // defines for i-quants
+    defines.push_back(type_upper + "_TABLES");
+    defines.push_back(type_upper + "_GRID");
+
+    // add variant
+    variant += "_";
+    variant += src0_type_str;
+
     break;
   }
 
   // Add VEC/SCALAR defines
   if (is_fast_path) {
-    // if quantized type and vectorized, need to use f16 instead of the
+    // if quantized type and using fast path, need to use f16 instead of the
     // quantized type
     if (context.key.src0_type != GGML_TYPE_F32 &&
         context.key.src0_type != GGML_TYPE_F16) {
       src0_type_str = "f16";
     }
 
-    if (context.key.is_vec) {
-      defines.push_back(context.key.vectorized ? "VEC" : "SCALAR");
-    } else {
-      // mul_mat_reg_tile and mul_mat_vec need to add normal and shmem versions
-      defines.push_back(context.key.vectorized ? "VEC" : "SCALAR");
+    // all fast paths need VEC vs SCALAR
+    defines.push_back(context.key.vectorized ? "VEC" : "SCALAR");
+
+    // reg_tile and subgroup_matrix need these extra defines
+    if (!context.key.is_vec) {
       defines.push_back(context.key.vectorized ? "SHMEM_VEC" : "SHMEM_SCALAR");
     }
   }
@@ -1333,67 +1072,50 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
   // Manual replacement of {{...}} placeholders before preprocessing
   std::string shader_with_replacements = shader_src;
 
-  // Replace {{placeholders}}
+  std::string shader_with_defines =
+      "#define TILE_M " + std::to_string(WEBGPU_MUL_MAT_TILE_M) + "u\n" +
+      "#define TILE_N " + std::to_string(WEBGPU_MUL_MAT_TILE_N) + "u\n";
 
-  ggml_webgpu_replace_placeholder(
-      shader_with_replacements, "VEC_SIZE",
-      std::to_string(context.key.vectorized ? 4 : 1));
-  ggml_webgpu_replace_placeholder(shader_with_replacements, "SRC0_TYPE",
-                                  src0_type_str ? src0_type_str : "f32");
-  ggml_webgpu_replace_placeholder(shader_with_replacements, "SRC1_TYPE",
-                                  src1_type_str ? src1_type_str : "f32");
-  ggml_webgpu_replace_placeholder(shader_with_replacements, "DST_TYPE",
-                                  dst_type_str ? dst_type_str : "f32");
-  ggml_webgpu_replace_placeholder(shader_with_replacements, "SHMEM_TYPE",
-                                  shmem_type_str ? shmem_type_str : "f16");
-  ggml_webgpu_replace_placeholder(shader_with_replacements, "WEBGPU_TILE_M",
-                                  std::to_string(context.tile_m));
-  ggml_webgpu_replace_placeholder(shader_with_replacements, "WEBGPU_TILE_N",
-                                  std::to_string(context.tile_n));
-  ggml_webgpu_replace_placeholder(shader_with_replacements, "BLOCK_SIZE",
-                                  std::to_string(block_size));
-
-  // Replace {{placeholders}} that only come up in mul_mat_subgroup_matrix
+  // Add subgroup matrix defines if using subgroup_matrix
   if (context.key.use_subgroup_matrix) {
-    ggml_webgpu_replace_placeholder(shader_with_replacements,
-                                    "WEBGPU_MAX_SUBGROUP_SIZE",
-                                    std::to_string(context.max_subgroup_size));
-    ggml_webgpu_replace_placeholder(shader_with_replacements, "WEBGPU_TILE_K",
-                                    std::to_string(context.tile_k));
-    ggml_webgpu_replace_placeholder(shader_with_replacements,
-                                    "WEBGPU_SUBGROUP_M",
-                                    std::to_string(context.subgroup_m));
-    ggml_webgpu_replace_placeholder(shader_with_replacements,
-                                    "WEBGPU_SUBGROUP_N",
-                                    std::to_string(context.subgroup_n));
-    ggml_webgpu_replace_placeholder(shader_with_replacements,
-                                    "WEBGPU_SUBGROUP_MATRIX_M",
-                                    std::to_string(context.subgroup_matrix_m));
-    ggml_webgpu_replace_placeholder(shader_with_replacements,
-                                    "WEBGPU_SUBGROUP_MATRIX_N",
-                                    std::to_string(context.subgroup_matrix_n));
-    ggml_webgpu_replace_placeholder(shader_with_replacements,
-                                    "WEBGPU_SG_MAT_M_SIZE",
-                                    std::to_string(context.sg_mat_m));
-    ggml_webgpu_replace_placeholder(shader_with_replacements,
-                                    "WEBGPU_SG_MAT_N_SIZE",
-                                    std::to_string(context.sg_mat_n));
-    ggml_webgpu_replace_placeholder(shader_with_replacements,
-                                    "WEBGPU_SG_MAT_K_SIZE",
-                                    std::to_string(context.sg_mat_k));
+    shader_with_defines +=
+        "#define MAX_SUBGROUP_SIZE " +
+        std::to_string(context.max_subgroup_size) + "u\n" + "#define TILE_K " +
+        std::to_string(WEBGPU_MUL_MAT_TILE_K) + "u\n" + "#define SUBGROUP_M " +
+        std::to_string(WEBGPU_MUL_MAT_SUBGROUP_M) + "u\n" +
+        "#define SUBGROUP_N " + std::to_string(WEBGPU_MUL_MAT_SUBGROUP_N) +
+        "u\n" + "#define SUBGROUP_MATRIX_M " +
+        std::to_string(WEBGPU_MUL_MAT_SUBGROUP_MATRIX_M) + "u\n" +
+        "#define SUBGROUP_MATRIX_N " +
+        std::to_string(WEBGPU_MUL_MAT_SUBGROUP_MATRIX_N) + "u\n" +
+        "#define SUBGROUP_MATRIX_M_SIZE " + std::to_string(context.sg_mat_m) +
+        "u\n" + "#define SUBGROUP_MATRIX_N_SIZE " +
+        std::to_string(context.sg_mat_n) + "u\n" +
+        "#define SUBGROUP_MATRIX_K_SIZE " + std::to_string(context.sg_mat_k) +
+        "u\n";
   }
 
+  shader_with_defines += shader_with_replacements;
+
   ggml_webgpu_processed_shader result;
-  result.wgsl = preprocessor.preprocess(shader_with_replacements, defines);
+  result.wgsl = preprocessor.preprocess(shader_with_defines, defines);
   result.variant = variant;
 
   ggml_webgpu_mul_mat_shader_decisions *decisions =
       new ggml_webgpu_mul_mat_shader_decisions();
-  decisions->tile_k = context.tile_k;
-  decisions->wg_size_m = context.wg_size_m;
-  decisions->wg_size_n = context.wg_size_n;
-  decisions->wg_size = context.wg_size;
-  decisions->outputs_per_wg = context.outputs_per_wg;
+  decisions->tile_m = WEBGPU_MUL_MAT_TILE_M;
+  decisions->tile_n = WEBGPU_MUL_MAT_TILE_N;
+  decisions->tile_k =
+      context.key.is_vec ? WEBGPU_MUL_MAT_VEC_TILE_K : WEBGPU_MUL_MAT_TILE_K;
+  decisions->wg_size_m = WEBGPU_MUL_MAT_WG_SIZE_M;
+  decisions->wg_size_n = WEBGPU_MUL_MAT_WG_SIZE_N;
+  decisions->wg_size = WEBGPU_MUL_MAT_VEC_WG_SIZE;
+  decisions->outputs_per_wg = WEBGPU_MUL_MAT_VEC_OUTPUTS_PER_WG;
+  decisions->subgroup_m = WEBGPU_MUL_MAT_SUBGROUP_M;
+  decisions->subgroup_n = WEBGPU_MUL_MAT_SUBGROUP_N;
+  decisions->subgroup_matrix_m = WEBGPU_MUL_MAT_SUBGROUP_MATRIX_M;
+  decisions->subgroup_matrix_n = WEBGPU_MUL_MAT_SUBGROUP_MATRIX_N;
+  decisions->mul_mat_wg_size = WEBGPU_MUL_MAT_WG_SIZE;
   decisions->is_vec = context.key.is_vec;
   decisions->use_subgroup_matrix = context.key.use_subgroup_matrix;
   result.decisions = decisions;

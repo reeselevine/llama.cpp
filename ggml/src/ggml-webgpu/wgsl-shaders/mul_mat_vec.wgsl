@@ -4,8 +4,30 @@ enable f16;
 #include "common_decls.tmpl"
 
 #ifdef VEC
-fn inner_dot(src0_val: {{SRC0_TYPE}}, src1_val: {{SRC1_TYPE}}) -> f32 {
-    return f32(dot({{SRC1_TYPE}}(src0_val), src1_val));
+
+const VEC_SIZE = 4u;
+alias DST_TYPE = vec4<f32>;
+#ifdef SRC0_F32
+    alias SRC0_TYPE = vec4<f32>;
+    alias SRC1_TYPE = vec4<f32>;
+#endif
+#ifdef SRC0_F16
+    alias SRC0_TYPE = vec4<f16>;
+    #ifdef SRC1_F16
+        alias SRC1_TYPE = vec4<f16>;
+    #endif
+    #ifdef SRC1_F32
+        alias SRC1_TYPE = vec4<f32>;
+    #endif
+#endif
+// if not float (quantized types)
+#ifndef FLOAT
+    alias SRC0_TYPE = f16;
+    alias SRC1_TYPE = vec4<f32>;
+#endif
+
+fn inner_dot(src0_val: SRC0_TYPE, src1_val: SRC1_TYPE) -> f32 {
+    return f32(dot(SRC1_TYPE(src0_val), src1_val));
 }
 
 fn store_val(group_base: u32) -> vec4<f32> {
@@ -17,7 +39,29 @@ fn store_val(group_base: u32) -> vec4<f32> {
 #endif
 
 #ifdef SCALAR
-fn inner_dot(src0_val: {{SRC0_TYPE}}, src1_val: {{SRC1_TYPE}}) -> f32 {
+
+const VEC_SIZE = 1u;
+alias DST_TYPE = f32;
+#ifdef SRC0_F32
+    alias SRC0_TYPE = f32;
+    alias SRC1_TYPE = f32;
+#endif
+#ifdef SRC0_F16
+    alias SRC0_TYPE = f16;
+    #ifdef SRC1_F16
+        alias SRC1_TYPE = f16;
+    #endif
+    #ifdef SRC1_F32
+        alias SRC1_TYPE = f32;
+    #endif
+#endif
+// if not float (quantized types)
+#ifndef FLOAT
+    alias SRC0_TYPE = f16;
+    alias SRC1_TYPE = f32;
+#endif
+
+fn inner_dot(src0_val: SRC0_TYPE, src1_val: SRC1_TYPE) -> f32 {
     return f32(src0_val) * f32(src1_val);
 }
 
@@ -29,9 +73,9 @@ fn store_val(group_base: u32) -> f32 {
 #ifdef MUL_ACC_FLOAT
 fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
     var local_sum = 0.0;
-    for (var i = tig * {{VEC_SIZE}}; i < tile_size; i += THREADS_PER_OUTPUT * {{VEC_SIZE}}) {
-        let a = src0[(idx_base + k_outer + i) / {{VEC_SIZE}}];
-        let b = shared_vector[i / {{VEC_SIZE}}];
+    for (var i = tig * VEC_SIZE; i < tile_size; i += THREADS_PER_OUTPUT * VEC_SIZE) {
+        let a = src0[(idx_base + k_outer + i) / VEC_SIZE];
+        let b = shared_vector[i / VEC_SIZE];
         local_sum += inner_dot(a, b);
     }
     return local_sum;
@@ -91,9 +135,10 @@ struct MulMatParams {
     broadcast3: u32
 };
 
-@group(0) @binding(0) var<storage, read_write> src0: array<{{SRC0_TYPE}}>; // Matrix (M x K)
-@group(0) @binding(1) var<storage, read_write> src1: array<{{SRC1_TYPE}}>; // Vector (K x 1, transposed)
-@group(0) @binding(2) var<storage, read_write> dst: array<{{DST_TYPE}}>;  // Result vector (transposed)
+// SRC0_TYPE and SRC1_TYPE are defined in mul_mat_decls, which is included
+@group(0) @binding(0) var<storage, read_write> src0: array<SRC0_TYPE>; // M rows, K columns
+@group(0) @binding(1) var<storage, read_write> src1: array<SRC1_TYPE>; // K rows, N columns (transposed)
+@group(0) @binding(2) var<storage, read_write> dst: array<DST_TYPE>; // M rows, N columns (transposed)
 
 @group(0) @binding(3) var<uniform> params: MulMatParams;
 
@@ -103,7 +148,7 @@ override OUTPUTS_PER_WG: u32;
 override THREADS_PER_OUTPUT = WORKGROUP_SIZE / OUTPUTS_PER_WG;
 
 // Shared memory for collaborative loading and reduction
-var<workgroup> shared_vector: array<{{SRC1_TYPE}}, TILE_K/{{VEC_SIZE}}>;  // Cache vector tile
+var<workgroup> shared_vector: array<SRC1_TYPE, TILE_K/VEC_SIZE>;  // Cache vector tile
 var<workgroup> partial_sums: array<f32, WORKGROUP_SIZE>;   // For reduction
 
 @compute @workgroup_size(WORKGROUP_SIZE)
@@ -149,8 +194,8 @@ fn main(
         let tile_size = min(TILE_K, params.k - k_tile);
 
         // Cooperatively load vector tile into shared memory (all threads)
-        for (var i = thread_id * {{VEC_SIZE}}; i < tile_size; i += WORKGROUP_SIZE * {{VEC_SIZE}}) {
-            shared_vector[i / {{VEC_SIZE}}] = src1[(src1_idx_base + k_tile + i) / {{VEC_SIZE}}];
+        for (var i = thread_id * VEC_SIZE; i < tile_size; i += WORKGROUP_SIZE * VEC_SIZE) {
+            shared_vector[i / VEC_SIZE] = src1[(src1_idx_base + k_tile + i) / VEC_SIZE];
         }
 
         workgroupBarrier();
@@ -177,8 +222,8 @@ fn main(
     }
 
     // Store back to global memory
-    if (output_row < params.m && thread_group % {{VEC_SIZE}} == 0 && thread_in_group == 0) {
-        dst[dst_idx / {{VEC_SIZE}}] = store_val(group_base);
+    if (output_row < params.m && thread_group % VEC_SIZE == 0 && thread_in_group == 0) {
+        dst[dst_idx / VEC_SIZE] = store_val(group_base);
     }
 }
 

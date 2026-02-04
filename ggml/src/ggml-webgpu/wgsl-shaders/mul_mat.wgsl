@@ -3,6 +3,39 @@ enable f16;
 #include "common_decls.tmpl"
 
 #ifdef FLOAT
+const BLOCK_SIZE = 1u;
+#endif
+
+#if defined(Q4_0) || defined(Q4_1) || defined(Q5_0) || defined(Q5_1) || defined(Q8_0) || defined(Q8_1) || defined(IQ4_NL)
+const BLOCK_SIZE = 32u;
+#endif
+
+#if defined(Q2_K) || defined(Q3_K) || defined(Q4_K) || defined(Q5_K) || defined(Q6_K) || defined(IQ2_XXS) || defined(IQ2_XS) || defined(IQ2_S) || defined(IQ3_XXS) || defined(IQ3_S) || defined(IQ1_S) || defined(IQ1_M) || defined(IQ4_XS)
+const BLOCK_SIZE = 256u;
+#endif
+
+
+#ifdef SRC0_F32
+    alias SRC0_COMMON_TYPE = f32;
+    alias SRC1_TYPE = f32;
+#endif
+#ifdef SRC0_F16
+    alias SRC0_COMMON_TYPE = f16;
+    #ifdef SRC1_F16
+        alias SRC1_TYPE = f16;
+    #endif
+    #ifdef SRC1_F32
+        alias SRC1_TYPE = f32;
+    #endif
+#endif
+// if not float (quantized types)
+#ifndef FLOAT
+    // alias SRC0_COMMON_TYPE = f32;
+    alias SRC1_TYPE = f32;
+#endif
+
+
+#ifdef FLOAT
 fn multiply_add(src0_idx_base: u32, src1_idx_base: u32, offset: u32) -> f32 {
     return f32(src0[src0_idx_base + offset]) * f32(src1[src1_idx_base + offset]);
 }
@@ -662,8 +695,8 @@ struct MulMatParams {
     broadcast3: u32
 };
 
-@group(0) @binding(0) var<storage, read_write> src0: array<{{SRC0_TYPE}}>; // M rows, K columns
-@group(0) @binding(1) var<storage, read_write> src1: array<{{SRC1_TYPE}}>; // K rows, N columns (transposed)
+@group(0) @binding(0) var<storage, read_write> src0: array<SRC0_COMMON_TYPE>; // M rows, K columns
+@group(0) @binding(1) var<storage, read_write> src1: array<SRC1_TYPE>; // K rows, N columns (transposed)
 @group(0) @binding(2) var<storage, read_write> dst: array<f32>; // M rows, N columns
 
 @group(0) @binding(3) var<uniform> params: MulMatParams;
@@ -696,7 +729,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let src1_idx_base = params.offset_src1 + src13_idx * params.stride_13 + src12_idx * params.stride_12 + row * params.stride_11;
 
     var sum = 0.0;
-    for (var i: u32 = 0u; i < params.k/{{BLOCK_SIZE}}; i = i + 1u) {
+    for (var i: u32 = 0u; i < params.k/BLOCK_SIZE; i = i + 1u) {
         sum += multiply_add(src0_idx_base, src1_idx_base, i);
     }
     dst[params.offset_dst + dst3_idx * dst3_stride + dst2_idx * dst2_stride + row * params.m + col] = sum;

@@ -1223,20 +1223,7 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context &ctx,
       .max_subgroup_size = ctx->max_subgroup_size,
       .sg_mat_m = ctx->sg_mat_m,
       .sg_mat_n = ctx->sg_mat_n,
-      .sg_mat_k = ctx->sg_mat_k,
-      .subgroup_m = WEBGPU_MUL_MAT_SUBGROUP_M,
-      .subgroup_n = WEBGPU_MUL_MAT_SUBGROUP_N,
-      .subgroup_matrix_m = WEBGPU_MUL_MAT_SUBGROUP_MATRIX_M,
-      .subgroup_matrix_n = WEBGPU_MUL_MAT_SUBGROUP_MATRIX_N,
-      .tile_m = static_cast<uint32_t>(WEBGPU_MUL_MAT_TILE_M),
-      .tile_n = static_cast<uint32_t>(WEBGPU_MUL_MAT_TILE_N),
-      .tile_k = static_cast<uint32_t>(is_vec ? WEBGPU_MUL_MAT_VEC_TILE_K
-                                             : WEBGPU_MUL_MAT_TILE_K),
-      .wg_size_m = static_cast<uint32_t>(WEBGPU_MUL_MAT_WG_SIZE_M),
-      .wg_size_n = static_cast<uint32_t>(WEBGPU_MUL_MAT_WG_SIZE_N),
-      .wg_size = static_cast<uint32_t>(WEBGPU_MUL_MAT_VEC_WG_SIZE),
-      .outputs_per_wg =
-          static_cast<uint32_t>(WEBGPU_MUL_MAT_VEC_OUTPUTS_PER_WG)};
+      .sg_mat_k = ctx->sg_mat_k};
 
   // Get or create pipeline
   webgpu_pipeline pipeline;
@@ -1272,22 +1259,26 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context &ctx,
 
         std::vector<wgpu::ConstantEntry> constants;
         if (shader_lib_ctx.key.is_vec) {
+          ggml_webgpu_mul_mat_shader_decisions *decisions =
+              static_cast<ggml_webgpu_mul_mat_shader_decisions *>(
+                  processed.decisions);
           constants.push_back({nullptr, "WORKGROUP_SIZE",
-                               static_cast<double>(shader_lib_ctx.wg_size)});
+                               static_cast<double>(decisions->wg_size)});
           constants.push_back(
-              {nullptr, "TILE_K", static_cast<double>(shader_lib_ctx.tile_k)});
-          constants.push_back(
-              {nullptr, "OUTPUTS_PER_WG",
-               static_cast<double>(shader_lib_ctx.outputs_per_wg)});
+              {nullptr, "TILE_K", static_cast<double>(decisions->tile_k)});
+          constants.push_back({nullptr, "OUTPUTS_PER_WG",
+                               static_cast<double>(decisions->outputs_per_wg)});
         } else if (shader_lib_ctx.key.register_tile) {
+          ggml_webgpu_mul_mat_shader_decisions *decisions =
+              static_cast<ggml_webgpu_mul_mat_shader_decisions *>(
+                  processed.decisions);
           constants.push_back({nullptr, "WORKGROUP_SIZE_M",
-                               static_cast<double>(shader_lib_ctx.wg_size_m)});
+                               static_cast<double>(decisions->wg_size_m)});
           constants.push_back({nullptr, "WORKGROUP_SIZE_N",
-                               static_cast<double>(shader_lib_ctx.wg_size_n)});
+                               static_cast<double>(decisions->wg_size_n)});
           constants.push_back(
-              {nullptr, "TILE_K", static_cast<double>(shader_lib_ctx.tile_k)});
+              {nullptr, "TILE_K", static_cast<double>(decisions->tile_k)});
         }
-
         // printf("DEBUG: Creating pipeline with variant='%s', "
         //        "constants.size()=%zu\n",
         //        processed.variant.c_str(), constants.size());
@@ -1356,23 +1347,24 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context &ctx,
     // Fast-path tiled/subgroup calculations
     uint32_t wg_m, wg_n;
     if (decisions.use_subgroup_matrix) {
-      uint32_t wg_m_sg_tile = WEBGPU_MUL_MAT_SUBGROUP_M *
-                              WEBGPU_MUL_MAT_SUBGROUP_MATRIX_M * ctx->sg_mat_m;
+      uint32_t wg_m_sg_tile =
+          decisions.subgroup_m * decisions.subgroup_matrix_m * ctx->sg_mat_m;
       wg_m = CEIL_DIV(dst->ne[0], wg_m_sg_tile);
-      uint32_t wg_n_sg_tile = WEBGPU_MUL_MAT_SUBGROUP_N *
-                              WEBGPU_MUL_MAT_SUBGROUP_MATRIX_N * ctx->sg_mat_n;
+      uint32_t wg_n_sg_tile =
+          decisions.subgroup_n * decisions.subgroup_matrix_n * ctx->sg_mat_n;
       wg_n = CEIL_DIV(dst->ne[1], wg_n_sg_tile);
     } else {
-      uint32_t tile_m_s = WEBGPU_MUL_MAT_TILE_M * decisions.wg_size_m;
-      uint32_t tile_n_s = WEBGPU_MUL_MAT_TILE_N * decisions.wg_size_n;
+      uint32_t tile_m_s = decisions.tile_m * decisions.wg_size_m;
+      uint32_t tile_n_s = decisions.tile_n * decisions.wg_size_n;
       wg_m = CEIL_DIV(dst->ne[0], tile_m_s);
       wg_n = CEIL_DIV(dst->ne[1], tile_n_s);
     }
     wg_x = wg_m * wg_n * dst->ne[2] * dst->ne[3];
   } else {
     // Non-fast-path quantized shaders (Q2_K, Q4_K, etc.)
+    // Use the value from decisions instead of hardcoded constant
     wg_x = CEIL_DIV(dst->ne[0] * dst->ne[1] * dst->ne[2] * dst->ne[3],
-                    WEBGPU_MUL_MAT_WG_SIZE);
+                    decisions.mul_mat_wg_size);
     wg_y = 1;
   }
 
