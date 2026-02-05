@@ -605,238 +605,82 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_get_rows_shader(
   std::vector<std::string> defines;
   std::string variant = "get_rows";
 
-  // Determine src type string and dst type string
+  // Determine src type string
   const char *type_str = nullptr;
-  const char *dst_type_str = nullptr;
-  uint32_t block_size = 1;
+
+  // src type
+  const struct ggml_type_traits *type_traits =
+      ggml_get_type_traits(context.key.src_type);
+  type_str = type_traits->type_name;
 
   switch (context.key.src_type) {
   case GGML_TYPE_F32:
     if (context.key.vectorized) {
       defines.push_back("F32_VEC");
-      type_str = "vec4<f32>";
-      dst_type_str = "vec4<f32>";
-      block_size = 4;
+      defines.push_back("SRC_TYPE=vec4<f32>");
+      defines.push_back("DST_TYPE=vec4<f32>");
+      defines.push_back("BLOCK_SIZE=4u");
     } else {
       defines.push_back("F32");
-      type_str = "f32";
-      dst_type_str = "f32";
-      block_size = 1;
+      defines.push_back("SRC_TYPE=f32");
+      defines.push_back("DST_TYPE=f32");
+      defines.push_back("BLOCK_SIZE=1u");
     }
     variant += "_f32";
     break;
   case GGML_TYPE_F16:
     defines.push_back("F16");
-    type_str = "f16";
-    dst_type_str = "f32";
-    block_size = 1;
+    defines.push_back("SRC_TYPE=f16");
+    defines.push_back("DST_TYPE=f32");
+    defines.push_back("BLOCK_SIZE=1u");
     variant += "_f16";
     break;
   case GGML_TYPE_I32:
     defines.push_back("I32");
-    type_str = "i32";
-    dst_type_str = "i32";
-    block_size = 1;
+    defines.push_back("SRC_TYPE=i32");
+    defines.push_back("DST_TYPE=i32");
+    defines.push_back("BLOCK_SIZE=1u");
     variant += "_i32";
     break;
-  case GGML_TYPE_Q4_0:
-    type_str = "q4_0";
-    dst_type_str = "f32";
-    block_size = 32;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("Q4_0_T");
-    defines.push_back("Q4_0");
-    variant += "_q4_0";
-    break;
-  case GGML_TYPE_Q4_1:
-    type_str = "q4_1";
-    dst_type_str = "f32";
-    block_size = 32;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("Q4_1_T");
-    defines.push_back("Q4_1");
-    variant += "_q4_1";
-    break;
-  case GGML_TYPE_Q5_0:
-    type_str = "q5_0";
-    dst_type_str = "f32";
-    block_size = 32;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("Q5_0_T");
-    defines.push_back("Q5_0");
-    variant += "_q5_0";
-    break;
-  case GGML_TYPE_Q5_1:
-    type_str = "q5_1";
-    dst_type_str = "f32";
-    block_size = 32;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("Q5_1_T");
-    defines.push_back("Q5_1");
-    variant += "_q5_1";
-    break;
-  case GGML_TYPE_Q8_0:
-    type_str = "q8_0";
-    dst_type_str = "f32";
-    block_size = 32;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("Q8_0_T");
-    defines.push_back("Q8_0");
-    variant += "_q8_0";
-    break;
-  case GGML_TYPE_Q8_1:
-    type_str = "q8_1";
-    dst_type_str = "f32";
-    block_size = 32;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("Q8_1_T");
-    defines.push_back("Q8_1");
-    variant += "_q8_1";
-    break;
-  case GGML_TYPE_Q2_K:
-    type_str = "q2_k";
-    dst_type_str = "f32";
-    block_size = 256; // K-quants use 256
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("Q2_K_T");
-    defines.push_back("Q2_K");
-    variant += "_q2_k";
-    break;
-  case GGML_TYPE_Q3_K:
-    type_str = "q3_k";
-    dst_type_str = "f32";
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("Q3_K_T");
-    defines.push_back("Q3_K");
-    variant += "_q3_k";
-    break;
-  case GGML_TYPE_Q4_K:
-    type_str = "q4_k";
-    dst_type_str = "f32";
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("Q4_K_T");
-    defines.push_back("Q4_K");
-    defines.push_back("Q45_K_SCALE_MIN");
-    variant += "_q4_k";
-    break;
-  case GGML_TYPE_Q5_K:
-    type_str = "q5_k";
-    dst_type_str = "f32";
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("Q5_K_T");
-    defines.push_back("Q5_K");
-    defines.push_back("Q45_K_SCALE_MIN");
-    variant += "_q5_k";
-    break;
-  case GGML_TYPE_Q6_K:
-    type_str = "q6_k";
-    dst_type_str = "f32";
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("Q6_K_T");
-    defines.push_back("Q6_K");
-    variant += "_q6_k";
-    break;
-  case GGML_TYPE_IQ2_XXS:
-    type_str = "iq2_xxs";
-    dst_type_str = "f32";
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("IQ2_XXS_T");
-    defines.push_back("IQ2_XXS");
-    defines.push_back("IQ23_TABLES");
-    defines.push_back("IQ2_XXS_GRID");
-    variant += "_iq2_xxs";
-    break;
-  case GGML_TYPE_IQ2_XS:
-    type_str = "iq2_xs";
-    dst_type_str = "f32";
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("IQ2_XS_T");
-    defines.push_back("IQ2_XS");
-    defines.push_back("IQ23_TABLES");
-    defines.push_back("IQ2_XS_GRID");
-    variant += "_iq2_xs";
-    break;
-  case GGML_TYPE_IQ2_S:
-    type_str = "iq2_s";
-    dst_type_str = "f32";
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("IQ2_S_T");
-    defines.push_back("IQ2_S");
-    defines.push_back("IQ23_TABLES");
-    defines.push_back("IQ2_S_GRID");
-    variant += "_iq2_s";
-    break;
-  case GGML_TYPE_IQ3_XXS:
-    type_str = "iq3_xxs";
-    dst_type_str = "f32";
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("IQ3_XXS_T");
-    defines.push_back("IQ3_XXS");
-    defines.push_back("IQ23_TABLES");
-    defines.push_back("IQ3_XXS_GRID");
-    variant += "_iq3_xxs";
-    break;
-  case GGML_TYPE_IQ3_S:
-    type_str = "iq3_s";
-    dst_type_str = "f32";
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("IQ3_S_T");
-    defines.push_back("IQ3_S");
-    defines.push_back("IQ23_TABLES");
-    defines.push_back("IQ3_S_GRID");
-    variant += "_iq3_s";
-    break;
-  case GGML_TYPE_IQ1_S:
-    type_str = "iq1_s";
-    dst_type_str = "f32";
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("IQ1_S_T");
-    defines.push_back("IQ1_S");
-    defines.push_back("IQ1_GRID");
-    variant += "_iq1_s";
-    break;
-  case GGML_TYPE_IQ1_M:
-    type_str = "iq1_m";
-    dst_type_str = "f32";
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("IQ1_M_T");
-    defines.push_back("IQ1_M");
-    defines.push_back("IQ1_GRID");
-    variant += "_iq1_m";
-    break;
-  case GGML_TYPE_IQ4_NL:
-    type_str = "iq4_nl";
-    dst_type_str = "f32";
-    block_size = 32;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("IQ4_NL_T");
-    defines.push_back("IQ4_NL");
-    defines.push_back("IQ4_GRID");
-    variant += "_iq4_nl";
-    break;
-  case GGML_TYPE_IQ4_XS:
-    type_str = "iq4_xs";
-    dst_type_str = "f32";
-    block_size = 256;
-    defines.push_back("BYTE_HELPERS");
-    defines.push_back("IQ4_XS_T");
-    defines.push_back("IQ4_XS");
-    defines.push_back("IQ4_GRID");
-    variant += "_iq4_xs";
-    break;
   default:
+    // convert name to upper case for other defines
+    std::string type_upper = type_str;
+    std::transform(type_upper.begin(), type_upper.end(), type_upper.begin(),
+                   ::toupper);
+
+    // push back defines for quantized types
+    defines.push_back("BYTE_HELPERS");
+    defines.push_back(type_upper + "_T");
+    defines.push_back(type_upper);
+
+    // for q4_k and q5_k
+    defines.push_back(type_upper + "_SCALE_MIN");
+
+    // defines for i-quants
+    defines.push_back(type_upper + "_TABLES");
+    defines.push_back(type_upper + "_GRID");
+
+    // add variant
+    variant += "_";
+    variant += type_str;
+
+    // add define for quantized src0 type
+    defines.push_back(std::string("SRC_TYPE=") + type_str);
+    defines.push_back("DST_TYPE=f32");
     break;
+  }
+
+  // determine block_size for quantized types
+  if (context.key.src_type == GGML_TYPE_I32) {
+    defines.push_back("BLOCK_SIZE=1u");
+  } else if ((context.key.src_type >= GGML_TYPE_Q4_0 &&
+              context.key.src_type <= GGML_TYPE_Q8_1) ||
+             context.key.src_type == GGML_TYPE_IQ4_NL) {
+    // Non-K quants use 32
+    defines.push_back("BLOCK_SIZE=32u");
+  } else if (context.key.src_type >= GGML_TYPE_Q2_K) {
+    // K-quants and IQ variants all use 256
+    defines.push_back("BLOCK_SIZE=256u");
   }
 
   // Vectorized suffix
@@ -844,20 +688,10 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_get_rows_shader(
     variant += "_vec";
   }
 
-  // Manual replacement of {{...}} placeholders
-  std::string shader_with_replacements = shader_src;
-
-  ggml_webgpu_replace_placeholder(shader_with_replacements, "TYPE",
-                                  type_str ? type_str : "f32");
-  ggml_webgpu_replace_placeholder(shader_with_replacements, "DST_TYPE",
-                                  dst_type_str ? dst_type_str : "f32");
-  ggml_webgpu_replace_placeholder(shader_with_replacements, "BLOCK_SIZE",
-                                  std::to_string(block_size));
-  ggml_webgpu_replace_placeholder(shader_with_replacements, "WORKGROUP_SIZE",
-                                  std::to_string(context.max_wg_size));
+  defines.push_back("WORKGROUP_SIZE=" + std::to_string(context.max_wg_size));
 
   ggml_webgpu_processed_shader result;
-  result.wgsl = preprocessor.preprocess(shader_with_replacements, defines);
+  result.wgsl = preprocessor.preprocess(shader_src, defines);
   result.variant = variant;
 
   // Create decisions structure to store workgroup size
@@ -950,9 +784,6 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
 
   // Determine src0/src1 type strings
   const char *src0_type_str = nullptr;
-  const char *src1_type_str = nullptr;
-  const char *dst_type_str = nullptr;
-  const char *shmem_type_str = nullptr;
 
   bool is_fast_path = context.key.is_vec || context.key.use_subgroup_matrix ||
                       context.key.register_tile;
@@ -960,21 +791,24 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
   // src1 type
   switch (context.key.src1_type) {
   case GGML_TYPE_F32:
-    src1_type_str = context.key.vectorized ? "vec4<f32>" : "f32";
-    dst_type_str = context.key.vectorized ? "vec4<f32>" : "f32";
-    defines.push_back("SRC1_F32");
+    defines.push_back(context.key.vectorized ? "SRC1_TYPE=vec4<f32>"
+                                             : "SRC1_TYPE=f32");
+    defines.push_back(context.key.vectorized ? "DST_TYPE=vec4<f32>"
+                                             : "DST_TYPE=f32");
     break;
   case GGML_TYPE_F16:
-    src1_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
-    dst_type_str = context.key.vectorized ? "vec4<f32>" : "f32";
-    defines.push_back("SRC1_F16");
+    defines.push_back(context.key.vectorized ? "SRC1_TYPE=vec4<f16>"
+                                             : "SRC1_TYPE=f16");
+    defines.push_back(context.key.vectorized ? "DST_TYPE=vec4<f32>"
+                                             : "DST_TYPE=f32");
     break;
   default:
     break;
   }
 
   // same for all types
-  shmem_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+  defines.push_back(context.key.vectorized ? "SHMEM_TYPE=vec4<f16>"
+                                           : "SHMEM_TYPE=f16");
 
   // src0 type
   const struct ggml_type_traits *src0_type_traits =
@@ -985,33 +819,33 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
   switch (context.key.src0_type) {
   case GGML_TYPE_F32:
     src0_type_str = context.key.vectorized ? "vec4<f32>" : "f32";
+    defines.push_back(context.key.vectorized ? "SRC0_TYPE=vec4<f32>"
+                                             : "SRC0_TYPE=f32");
 
     defines.push_back("FLOAT");
     defines.push_back("MUL_ACC_FLOAT");
     defines.push_back("INIT_SRC0_SHMEM_FLOAT");
     defines.push_back("INIT_SRC1_SHMEM_FLOAT");
-
-    defines.push_back("SRC0_F32");
 
     variant += "_f32";
     break;
 
   case GGML_TYPE_F16:
     src0_type_str = context.key.vectorized ? "vec4<f16>" : "f16";
+    defines.push_back(context.key.vectorized ? "SRC0_TYPE=vec4<f16>"
+                                             : "SRC0_TYPE=f16");
 
     defines.push_back("FLOAT");
     defines.push_back("MUL_ACC_FLOAT");
     defines.push_back("INIT_SRC0_SHMEM_FLOAT");
     defines.push_back("INIT_SRC1_SHMEM_FLOAT");
 
-    defines.push_back("SRC0_F16");
-
     variant += "_f16";
 
     break;
 
   default:
-    // convert name to upper case for defines
+    // convert name to upper case for other defines
     std::string type_upper = src0_type_str;
     std::transform(type_upper.begin(), type_upper.end(), type_upper.begin(),
                    ::toupper);
@@ -1036,6 +870,10 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
     variant += "_";
     variant += src0_type_str;
 
+    // add define for non-fast path quantized src0 type-- overwritten if fast
+    // path
+    defines.push_back(std::string("SRC0_TYPE=") + src0_type_str);
+
     break;
   }
 
@@ -1046,10 +884,13 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
     if (context.key.src0_type != GGML_TYPE_F32 &&
         context.key.src0_type != GGML_TYPE_F16) {
       src0_type_str = "f16";
+      defines.push_back(std::string("SRC0_TYPE=") + src0_type_str);
     }
 
     // all fast paths need VEC vs SCALAR
     defines.push_back(context.key.vectorized ? "VEC" : "SCALAR");
+    // add vec_size define too
+    defines.push_back(context.key.vectorized ? "VEC_SIZE=4u" : "VEC_SIZE=1u");
 
     // reg_tile and subgroup_matrix need these extra defines
     if (!context.key.is_vec) {
@@ -1069,36 +910,33 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
     variant += "_vec";
   }
 
-  // Manual replacement of {{...}} placeholders before preprocessing
-  std::string shader_with_replacements = shader_src;
-
-  std::string shader_with_defines =
-      "#define TILE_M " + std::to_string(WEBGPU_MUL_MAT_TILE_M) + "u\n" +
-      "#define TILE_N " + std::to_string(WEBGPU_MUL_MAT_TILE_N) + "u\n";
+  // Add defines for TILE_M and TILE_N
+  defines.push_back("TILE_M=" + std::to_string(WEBGPU_MUL_MAT_TILE_M) + "u");
+  defines.push_back("TILE_N=" + std::to_string(WEBGPU_MUL_MAT_TILE_N) + "u");
 
   // Add subgroup matrix defines if using subgroup_matrix
   if (context.key.use_subgroup_matrix) {
-    shader_with_defines +=
-        "#define MAX_SUBGROUP_SIZE " +
-        std::to_string(context.max_subgroup_size) + "u\n" + "#define TILE_K " +
-        std::to_string(WEBGPU_MUL_MAT_TILE_K) + "u\n" + "#define SUBGROUP_M " +
-        std::to_string(WEBGPU_MUL_MAT_SUBGROUP_M) + "u\n" +
-        "#define SUBGROUP_N " + std::to_string(WEBGPU_MUL_MAT_SUBGROUP_N) +
-        "u\n" + "#define SUBGROUP_MATRIX_M " +
-        std::to_string(WEBGPU_MUL_MAT_SUBGROUP_MATRIX_M) + "u\n" +
-        "#define SUBGROUP_MATRIX_N " +
-        std::to_string(WEBGPU_MUL_MAT_SUBGROUP_MATRIX_N) + "u\n" +
-        "#define SUBGROUP_MATRIX_M_SIZE " + std::to_string(context.sg_mat_m) +
-        "u\n" + "#define SUBGROUP_MATRIX_N_SIZE " +
-        std::to_string(context.sg_mat_n) + "u\n" +
-        "#define SUBGROUP_MATRIX_K_SIZE " + std::to_string(context.sg_mat_k) +
-        "u\n";
+    defines.push_back(
+        "MAX_SUBGROUP_SIZE=" + std::to_string(context.max_subgroup_size) + "u");
+    defines.push_back("TILE_K=" + std::to_string(WEBGPU_MUL_MAT_TILE_K) + "u");
+    defines.push_back(
+        "SUBGROUP_M=" + std::to_string(WEBGPU_MUL_MAT_SUBGROUP_M) + "u");
+    defines.push_back(
+        "SUBGROUP_N=" + std::to_string(WEBGPU_MUL_MAT_SUBGROUP_N) + "u");
+    defines.push_back("SUBGROUP_MATRIX_M=" +
+                      std::to_string(WEBGPU_MUL_MAT_SUBGROUP_MATRIX_M) + "u");
+    defines.push_back("SUBGROUP_MATRIX_N=" +
+                      std::to_string(WEBGPU_MUL_MAT_SUBGROUP_MATRIX_N) + "u");
+    defines.push_back(
+        "SUBGROUP_MATRIX_M_SIZE=" + std::to_string(context.sg_mat_m) + "u");
+    defines.push_back(
+        "SUBGROUP_MATRIX_N_SIZE=" + std::to_string(context.sg_mat_n) + "u");
+    defines.push_back(
+        "SUBGROUP_MATRIX_K_SIZE=" + std::to_string(context.sg_mat_k) + "u");
   }
 
-  shader_with_defines += shader_with_replacements;
-
   ggml_webgpu_processed_shader result;
-  result.wgsl = preprocessor.preprocess(shader_with_defines, defines);
+  result.wgsl = preprocessor.preprocess(shader_src, defines);
   result.variant = variant;
 
   ggml_webgpu_mul_mat_shader_decisions *decisions =

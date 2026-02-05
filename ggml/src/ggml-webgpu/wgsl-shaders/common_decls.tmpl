@@ -13,7 +13,6 @@ struct q4_0 {
     d: f16,
     qs: array<f16, 8>
 };
-alias SRC0_COMMON_TYPE = q4_0;
 #endif
 
 #ifdef Q4_1_T
@@ -22,7 +21,6 @@ struct q4_1 {
     m: f16,
     qs: array<u32, 4>
 };
-alias SRC0_COMMON_TYPE = q4_1;
 #endif
 
 #ifdef Q5_0_T
@@ -31,7 +29,6 @@ struct q5_0 {
     qh: array<f16, 2>,
     qs: array<f16, 8>
 };
-alias SRC0_COMMON_TYPE = q5_0;
 #endif
 
 #ifdef Q5_1_T
@@ -41,7 +38,6 @@ struct q5_1 {
     qh: u32,
     qs: array<u32, 4>
 };
-alias SRC0_COMMON_TYPE = q5_1;
 #endif
 
 #ifdef Q8_0_T
@@ -49,7 +45,6 @@ struct q8_0 {
     d: f16,
     qs: array<f16, 16>
 };
-alias SRC0_COMMON_TYPE = q8_0;
 #endif
 
 #ifdef Q8_1_T
@@ -58,7 +53,6 @@ struct q8_1 {
     m: f16,
     qs: array<u32, 8>
 };
-alias SRC0_COMMON_TYPE = q8_1;
 #endif
 
 #ifdef Q2_K_T
@@ -68,7 +62,6 @@ struct q2_K {
     d: f16,
     dmin: f16
 };
-alias SRC0_COMMON_TYPE = q2_K;
 #endif
 
 #ifdef Q3_K_T
@@ -78,7 +71,6 @@ struct q3_K {
     scales: array<f16, 6>,
     d: f16
 };
-alias SRC0_COMMON_TYPE = q3_K;
 #endif
 
 #if defined(Q4_K_SCALE_MIN) || defined(Q5_K_SCALE_MIN)
@@ -104,7 +96,6 @@ struct q4_K {
     scales: array<u32, 3>,
     qs: array<u32, 32>
 };
-alias SRC0_COMMON_TYPE = q4_K;
 #endif
 
 #ifdef Q5_K_T
@@ -115,7 +106,6 @@ struct q5_K {
     qh: array<u32, 8>,
     qs: array<u32, 32>
 };
-alias SRC0_COMMON_TYPE = q5_K;
 #endif
 
 #ifdef Q6_K_T
@@ -125,7 +115,6 @@ struct q6_K {
     scales: array<f16, 8>,
     d: f16
 };
-alias SRC0_COMMON_TYPE = q6_K;
 #endif
 
 #ifdef IQ2_XXS_T
@@ -133,7 +122,6 @@ struct iq2_xxs {
     d: f16,
     qs: array<f16, 32>
 };
-alias SRC0_COMMON_TYPE = iq2_xxs;
 #endif
 
 #ifdef IQ2_XS_T
@@ -142,7 +130,6 @@ struct iq2_xs {
     qs: array<f16, 32>,
     scales: array<f16, 4>
 };
-alias SRC0_COMMON_TYPE = iq2_xs;
 #endif
 
 #ifdef IQ2_S_T
@@ -152,7 +139,6 @@ struct iq2_s {
     qh: array<f16, 4>,
     scales: array<f16, 4>
 };
-alias SRC0_COMMON_TYPE = iq2_s;
 #endif
 
 #ifdef IQ3_XXS_T
@@ -160,7 +146,6 @@ struct iq3_xxs {
     d: f16,
     qs: array<f16, 48>
 };
-alias SRC0_COMMON_TYPE = iq3_xxs;
 #endif
 
 #ifdef IQ3_S_T
@@ -171,7 +156,6 @@ struct iq3_s {
     signs: array<f16, 16>,
     scales: array<f16, 2>
 };
-alias SRC0_COMMON_TYPE = iq3_s;
 #endif
 
 #ifdef IQ1_S_T
@@ -180,7 +164,6 @@ struct iq1_s {
     qs: array<f16, 16>,
     qh: array<f16, 8>
 };
-alias SRC0_COMMON_TYPE = iq1_s;
 #endif
 
 #ifdef IQ1_M_T
@@ -189,7 +172,6 @@ struct iq1_m {
     qh: array<u32, 4>,
     scales: array<u32, 2>
 };
-alias SRC0_COMMON_TYPE = iq1_m;
 #endif
 
 #ifdef IQ4_NL_T
@@ -197,7 +179,6 @@ struct iq4_nl {
     d: f16,
     qs: array<f16, 8>,
 };
-alias SRC0_COMMON_TYPE = iq4_nl;
 #endif
 
 #ifdef IQ4_XS_T
@@ -207,7 +188,6 @@ struct iq4_xs {
     scales_l: u32,
     qs: array<u32, 32>
 };
-alias SRC0_COMMON_TYPE = iq4_xs;
 #endif
 
 #if defined(IQ2_XXS_TABLES) || defined(IQ2_XS_TABLES) || defined(IQ2_S_TABLES) || defined(IQ3_XXS_TABLES) || defined(IQ3_S_TABLES)

@@ -4,36 +4,13 @@ enable f16;
 
 #ifdef FLOAT
 const BLOCK_SIZE = 1u;
-#endif
 
-#if defined(Q4_0) || defined(Q4_1) || defined(Q5_0) || defined(Q5_1) || defined(Q8_0) || defined(Q8_1) || defined(IQ4_NL)
+#elif defined(Q4_0) || defined(Q4_1) || defined(Q5_0) || defined(Q5_1) || defined(Q8_0) || defined(Q8_1) || defined(IQ4_NL)
 const BLOCK_SIZE = 32u;
-#endif
 
-#if defined(Q2_K) || defined(Q3_K) || defined(Q4_K) || defined(Q5_K) || defined(Q6_K) || defined(IQ2_XXS) || defined(IQ2_XS) || defined(IQ2_S) || defined(IQ3_XXS) || defined(IQ3_S) || defined(IQ1_S) || defined(IQ1_M) || defined(IQ4_XS)
+#elif defined(Q2_K) || defined(Q3_K) || defined(Q4_K) || defined(Q5_K) || defined(Q6_K) || defined(IQ2_XXS) || defined(IQ2_XS) || defined(IQ2_S) || defined(IQ3_XXS) || defined(IQ3_S) || defined(IQ1_S) || defined(IQ1_M) || defined(IQ4_XS)
 const BLOCK_SIZE = 256u;
 #endif
-
-
-#ifdef SRC0_F32
-    alias SRC0_COMMON_TYPE = f32;
-    alias SRC1_TYPE = f32;
-#endif
-#ifdef SRC0_F16
-    alias SRC0_COMMON_TYPE = f16;
-    #ifdef SRC1_F16
-        alias SRC1_TYPE = f16;
-    #endif
-    #ifdef SRC1_F32
-        alias SRC1_TYPE = f32;
-    #endif
-#endif
-// if not float (quantized types)
-#ifndef FLOAT
-    // alias SRC0_COMMON_TYPE = f32;
-    alias SRC1_TYPE = f32;
-#endif
-
 
 #ifdef FLOAT
 fn multiply_add(src0_idx_base: u32, src1_idx_base: u32, offset: u32) -> f32 {
@@ -695,7 +672,7 @@ struct MulMatParams {
     broadcast3: u32
 };
 
-@group(0) @binding(0) var<storage, read_write> src0: array<SRC0_COMMON_TYPE>; // M rows, K columns
+@group(0) @binding(0) var<storage, read_write> src0: array<SRC0_TYPE>; // M rows, K columns
 @group(0) @binding(1) var<storage, read_write> src1: array<SRC1_TYPE>; // K rows, N columns (transposed)
 @group(0) @binding(2) var<storage, read_write> dst: array<f32>; // M rows, N columns
 

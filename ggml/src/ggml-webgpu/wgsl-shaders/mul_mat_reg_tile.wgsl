@@ -48,10 +48,6 @@ fn get_local_m(thread_id: u32) -> u32 {
     return thread_id % WORKGROUP_SIZE_M;
 }
 
-// // TILE_M must be multiple of 4 for vec4 loads
-// const TILE_M = {{WEBGPU_TILE_M}}u;
-// const TILE_N = {{WEBGPU_TILE_N}}u;
-
 override WORKGROUP_SIZE_M: u32;
 override WORKGROUP_SIZE_N: u32;
 override TILE_K: u32;

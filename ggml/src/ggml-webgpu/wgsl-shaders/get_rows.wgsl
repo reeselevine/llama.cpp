@@ -598,13 +598,13 @@ fn copy_elements(src_base: u32, dst_base: u32, offset: u32) {
 #endif
 
 @group(0) @binding(0)
-var<storage, read_write> src: array<{{TYPE}}>;
+var<storage, read_write> src: array<SRC_TYPE>;
 
 @group(0) @binding(1)
 var<storage, read_write> idx: array<i32>;
 
 @group(0) @binding(2)
-var<storage, read_write> dst: array<{{DST_TYPE}}>;
+var<storage, read_write> dst: array<DST_TYPE>;
 
 struct Params {
     offset_src: u32, // in elements
@@ -662,7 +662,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i_src_row = params.offset_src + idx_val * params.stride_src1 + i_dst2 * params.stride_src2 + i_dst3 * params.stride_src3;
     let i_dst_row = params.offset_dst + i_dst1 * params.stride_dst1 + i_dst2 * params.stride_dst2 + i_dst3 * params.stride_dst3;
 
-    for (var i: u32 = 0; i < params.ne0/{{BLOCK_SIZE}}; i++) {
+    for (var i: u32 = 0; i < params.ne0/BLOCK_SIZE; i++) {
       copy_elements(i_src_row, i_dst_row, i);
     }
 }

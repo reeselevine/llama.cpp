@@ -13,58 +13,6 @@ fn store_shmem(val: f16, idx: u32) {
 }
 #endif
 
-#ifdef VEC
-const VEC_SIZE = 4u;
-alias DST_TYPE = vec4<f32>;
-    #ifdef SRC0_F32
-        alias SRC0_TYPE = vec4<f32>;
-        alias SRC1_TYPE = vec4<f32>;
-        alias SHMEM_TYPE = vec4<f16>;
-    #endif
-    #ifdef SRC0_F16
-        alias SRC0_TYPE = vec4<f16>;
-        #ifdef SRC1_F16
-            alias SRC1_TYPE = vec4<f16>;
-        #endif
-        #ifdef SRC1_F32
-            alias SRC1_TYPE = vec4<f32>;
-        #endif
-        alias SHMEM_TYPE = vec4<f16>;
-    #endif
-    // if not float (quantized types)
-    #ifndef FLOAT
-        alias SRC0_TYPE = f16;
-        alias SRC1_TYPE = vec4<f32>;
-        alias SHMEM_TYPE = vec4<f16>;
-    #endif
-#endif
-
-#ifdef SCALAR
-const VEC_SIZE = 1u;
-alias DST_TYPE = f32;
-    #ifdef SRC0_F32
-        alias SRC0_TYPE = f32;
-        alias SRC1_TYPE = f32;
-        alias SHMEM_TYPE = f16;
-    #endif
-    #ifdef SRC0_F16
-        alias SRC0_TYPE = f16;
-        #ifdef SRC1_F16
-            alias SRC1_TYPE = f16;
-        #endif
-        #ifdef SRC1_F32
-            alias SRC1_TYPE = f32;
-        #endif
-        alias SHMEM_TYPE = f16;
-    #endif
-    // if not float (quantized types)
-    #ifndef FLOAT
-        alias SRC0_TYPE = f16;
-        alias SRC1_TYPE = f32;
-        alias SHMEM_TYPE = f16;
-    #endif
-#endif
-
 #ifdef INIT_SRC0_SHMEM_FLOAT
 fn init_shmem_src0(thread_id: u32, batch_offset: u32, offset_m: u32, k_outer: u32) {
     for (var elem_idx = thread_id * VEC_SIZE; elem_idx < TILE_SRC0_SHMEM; elem_idx += TOTAL_WORKGROUP_SIZE * VEC_SIZE) {

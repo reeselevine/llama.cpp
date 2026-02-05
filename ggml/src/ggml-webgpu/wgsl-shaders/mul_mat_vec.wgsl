@@ -4,28 +4,6 @@ enable f16;
 #include "common_decls.tmpl"
 
 #ifdef VEC
-
-const VEC_SIZE = 4u;
-alias DST_TYPE = vec4<f32>;
-#ifdef SRC0_F32
-    alias SRC0_TYPE = vec4<f32>;
-    alias SRC1_TYPE = vec4<f32>;
-#endif
-#ifdef SRC0_F16
-    alias SRC0_TYPE = vec4<f16>;
-    #ifdef SRC1_F16
-        alias SRC1_TYPE = vec4<f16>;
-    #endif
-    #ifdef SRC1_F32
-        alias SRC1_TYPE = vec4<f32>;
-    #endif
-#endif
-// if not float (quantized types)
-#ifndef FLOAT
-    alias SRC0_TYPE = f16;
-    alias SRC1_TYPE = vec4<f32>;
-#endif
-
 fn inner_dot(src0_val: SRC0_TYPE, src1_val: SRC1_TYPE) -> f32 {
     return f32(dot(SRC1_TYPE(src0_val), src1_val));
 }
@@ -39,28 +17,6 @@ fn store_val(group_base: u32) -> vec4<f32> {
 #endif
 
 #ifdef SCALAR
-
-const VEC_SIZE = 1u;
-alias DST_TYPE = f32;
-#ifdef SRC0_F32
-    alias SRC0_TYPE = f32;
-    alias SRC1_TYPE = f32;
-#endif
-#ifdef SRC0_F16
-    alias SRC0_TYPE = f16;
-    #ifdef SRC1_F16
-        alias SRC1_TYPE = f16;
-    #endif
-    #ifdef SRC1_F32
-        alias SRC1_TYPE = f32;
-    #endif
-#endif
-// if not float (quantized types)
-#ifndef FLOAT
-    alias SRC0_TYPE = f16;
-    alias SRC1_TYPE = f32;
-#endif
-
 fn inner_dot(src0_val: SRC0_TYPE, src1_val: SRC1_TYPE) -> f32 {
     return f32(src0_val) * f32(src1_val);
 }
