@@ -49,28 +49,12 @@ struct MulMatParams {
 
 @group(0) @binding(3) var<uniform> params: MulMatParams;
 
-// // Note: These are string interpolated at build time, cannot use override constants due to limitations in
-// // current Dawn version type definitions/matrix load requirements for constant memory sizes.
-// const SUBGROUP_M = {{WEBGPU_SUBGROUP_M}}u;
-// const SUBGROUP_N = {{WEBGPU_SUBGROUP_N}}u;
-// // For portability we assume the max subgroup size, meaning some subgroups will be masked out if the
-// // runtime subgroup size is smaller.
-// const MAX_SUBGROUP_SIZE = {{WEBGPU_MAX_SUBGROUP_SIZE}}u;
-
-// const EXPECTED_SUBGROUPS = SUBGROUP_M * SUBGROUP_N;
-
-// const SUBGROUP_MATRIX_M_SIZE = {{WEBGPU_SG_MAT_M_SIZE}}u;
-// const SUBGROUP_MATRIX_N_SIZE = {{WEBGPU_SG_MAT_N_SIZE}}u;
-// const SUBGROUP_MATRIX_K_SIZE = {{WEBGPU_SG_MAT_K_SIZE}}u;
-
-// const SUBGROUP_MATRIX_M = {{WEBGPU_SUBGROUP_MATRIX_M}}u;
-// const SUBGROUP_MATRIX_N = {{WEBGPU_SUBGROUP_MATRIX_N}}u;
-
-// const TILE_K = {{WEBGPU_TILE_K}}u;
-
 const WG_M_SG_TILE_SIZE = SUBGROUP_M * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE;
 const WG_N_SG_TILE_SIZE = SUBGROUP_N * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE;
 
+// For portability we assume the max subgroup size, meaning some subgroups will be masked out if the
+// runtime subgroup size is smaller.
+const EXPECTED_SUBGROUPS = SUBGROUP_M * SUBGROUP_N;
 const TOTAL_WORKGROUP_SIZE = SUBGROUP_M * SUBGROUP_N * MAX_SUBGROUP_SIZE;
 const TILE_SRC0_SHMEM = TILE_K * SUBGROUP_M * SUBGROUP_MATRIX_M * SUBGROUP_MATRIX_M_SIZE;
 const TILE_SRC1_SHMEM = TILE_K * SUBGROUP_N * SUBGROUP_MATRIX_N * SUBGROUP_MATRIX_N_SIZE;
