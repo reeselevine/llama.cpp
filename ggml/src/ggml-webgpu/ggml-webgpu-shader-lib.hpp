@@ -560,21 +560,21 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_scale_shader(
     std::string              variant = "scale";
 
     if (context.key.inplace) {
-    defines.push_back("INPLACE");
-    variant += "_inplace";
-  }
+        defines.push_back("INPLACE");
+        variant += "_inplace";
+    }
 
-  defines.push_back(std::string("WG_SIZE=") +
-                    std::to_string(context.max_wg_size));
+    defines.push_back(std::string("WG_SIZE=") + std::to_string(context.max_wg_size));
 
-  ggml_webgpu_processed_shader result;
-  result.wgsl = preprocessor.preprocess(shader_src, defines);
-  result.variant = variant;
-  auto decisions     = std::make_shared<ggml_webgpu_generic_shader_decisions>();
-  decisions->wg_size = context.max_wg_size;
-  result.decisions = decisions;
-  return result;
+    ggml_webgpu_processed_shader result;
+    result.wgsl        = preprocessor.preprocess(shader_src, defines);
+    result.variant     = variant;
+    auto decisions     = std::make_shared<ggml_webgpu_generic_shader_decisions>();
+    decisions->wg_size = context.max_wg_size;
+    result.decisions   = decisions;
+    return result;
 }
+
 struct ggml_webgpu_binary_shader_lib_context {
     ggml_webgpu_binary_pipeline_key key;
     uint32_t                        max_wg_size;
@@ -740,9 +740,9 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_get_rows_shader(
     result.variant = variant;
 
     // Create decisions structure to store workgroup size
-  auto decisions     = std::make_shared<ggml_webgpu_generic_shader_decisions>();
-    decisions->wg_size                               = context.max_wg_size;
-    result.decisions                                 = decisions;
+    auto decisions     = std::make_shared<ggml_webgpu_generic_shader_decisions>();
+    decisions->wg_size = context.max_wg_size;
+    result.decisions   = decisions;
 
     return result;
 }
@@ -962,9 +962,9 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
     result.wgsl    = preprocessor.preprocess(shader_src, defines);
     result.variant = variant;
 
-    auto decisions = std::make_shared<ggml_webgpu_mul_mat_shader_decisions>();
-    decisions->tile_m                                = WEBGPU_MUL_MAT_TILE_M;
-    decisions->tile_n                                = WEBGPU_MUL_MAT_TILE_N;
+    auto decisions                 = std::make_shared<ggml_webgpu_mul_mat_shader_decisions>();
+    decisions->tile_m              = WEBGPU_MUL_MAT_TILE_M;
+    decisions->tile_n              = WEBGPU_MUL_MAT_TILE_N;
     decisions->tile_k              = context.key.is_vec ? WEBGPU_MUL_MAT_VEC_TILE_K : WEBGPU_MUL_MAT_TILE_K;
     decisions->wg_size_m           = WEBGPU_MUL_MAT_WG_SIZE_M;
     decisions->wg_size_n           = WEBGPU_MUL_MAT_WG_SIZE_N;
