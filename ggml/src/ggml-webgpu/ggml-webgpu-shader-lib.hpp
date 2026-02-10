@@ -4,6 +4,7 @@
 #include "ggml.h"
 #include "pre_wgsl.hpp"
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -58,9 +59,9 @@ inline void ggml_webgpu_replace_placeholder(std::string &       shader_code,
 }
 
 struct ggml_webgpu_processed_shader {
-    std::string wgsl;
-    std::string variant;
-    void *      decisions;
+    std::string           wgsl;
+    std::string           variant;
+    std::shared_ptr<void> decisions;
 };
 
 // Same hash combine function as in boost
@@ -233,13 +234,13 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_flash_attn_shader(
     defines.push_back(std::string("WG_SIZE=") + std::to_string(wg_size));
 
     ggml_webgpu_processed_shader result;
-    result.wgsl                                         = preprocessor.preprocess(shader_src, defines);
-    result.variant                                      = variant;
-    ggml_webgpu_flash_attn_shader_decisions * decisions = new ggml_webgpu_flash_attn_shader_decisions();
-    decisions->q_tile                                   = q_tile;
-    decisions->kv_tile                                  = kv_tile;
-    decisions->wg_size                                  = wg_size;
-    result.decisions                                    = decisions;
+    result.wgsl        = preprocessor.preprocess(shader_src, defines);
+    result.variant     = variant;
+    auto decisions     = std::make_shared<ggml_webgpu_flash_attn_shader_decisions>();
+    decisions->q_tile  = q_tile;
+    decisions->kv_tile = kv_tile;
+    decisions->wg_size = wg_size;
+    result.decisions   = decisions;
     return result;
 }
 
@@ -311,11 +312,11 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_pad_shader(
     defines.push_back(std::string("WG_SIZE=") + std::to_string(context.max_wg_size));
 
     ggml_webgpu_processed_shader result;
-    result.wgsl                                      = preprocessor.preprocess(shader_src, defines);
-    result.variant                                   = variant;
-    ggml_webgpu_generic_shader_decisions * decisions = new ggml_webgpu_generic_shader_decisions();
-    decisions->wg_size                               = context.max_wg_size;
-    result.decisions                                 = decisions;
+    result.wgsl        = preprocessor.preprocess(shader_src, defines);
+    result.variant     = variant;
+    auto decisions     = std::make_shared<ggml_webgpu_generic_shader_decisions>();
+    decisions->wg_size = context.max_wg_size;
+    result.decisions   = decisions;
     return result;
 }
 
@@ -346,11 +347,11 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_argsort_shader(
     }
     defines.push_back(std::string("WG_SIZE=") + std::to_string(wg_size));
     ggml_webgpu_processed_shader result;
-    result.wgsl                                      = preprocessor.preprocess(shader_src, defines);
-    result.variant                                   = variant;
-    ggml_webgpu_argsort_shader_decisions * decisions = new ggml_webgpu_argsort_shader_decisions();
-    decisions->wg_size                               = wg_size;
-    result.decisions                                 = decisions;
+    result.wgsl        = preprocessor.preprocess(shader_src, defines);
+    result.variant     = variant;
+    auto decisions     = std::make_shared<ggml_webgpu_argsort_shader_decisions>();
+    decisions->wg_size = wg_size;
+    result.decisions   = decisions;
     return result;
 }
 
@@ -365,11 +366,11 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_argsort_merge_shader(
     uint32_t wg_size = std::min(GGML_WEBGPU_ARGSORT_MERGE_MAX_WG_SIZE, context.max_wg_size);
     defines.push_back(std::string("WG_SIZE=") + std::to_string(wg_size));
     ggml_webgpu_processed_shader result;
-    result.wgsl                                      = preprocessor.preprocess(shader_src, defines);
-    result.variant                                   = variant;
-    ggml_webgpu_argsort_shader_decisions * decisions = new ggml_webgpu_argsort_shader_decisions();
-    decisions->wg_size                               = wg_size;
-    result.decisions                                 = decisions;
+    result.wgsl        = preprocessor.preprocess(shader_src, defines);
+    result.variant     = variant;
+    auto decisions     = std::make_shared<ggml_webgpu_argsort_shader_decisions>();
+    decisions->wg_size = wg_size;
+    result.decisions   = decisions;
     return result;
 }
 
@@ -432,11 +433,11 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_set_rows_shader(
     defines.push_back(std::string("WG_SIZE=") + std::to_string(context.max_wg_size));
 
     ggml_webgpu_processed_shader result;
-    result.wgsl                                      = preprocessor.preprocess(shader_src, defines);
-    result.variant                                   = variant;
-    ggml_webgpu_generic_shader_decisions * decisions = new ggml_webgpu_generic_shader_decisions();
-    decisions->wg_size                               = context.max_wg_size;
-    result.decisions                                 = decisions;
+    result.wgsl        = preprocessor.preprocess(shader_src, defines);
+    result.variant     = variant;
+    auto decisions     = std::make_shared<ggml_webgpu_generic_shader_decisions>();
+    decisions->wg_size = context.max_wg_size;
+    result.decisions   = decisions;
     return result;
 }
 
@@ -498,11 +499,11 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_unary_shader(
     defines.push_back(std::string("WG_SIZE=") + std::to_string(context.max_wg_size));
 
     ggml_webgpu_processed_shader result;
-    result.wgsl                                      = preprocessor.preprocess(shader_src, defines);
-    result.variant                                   = variant;
-    ggml_webgpu_generic_shader_decisions * decisions = new ggml_webgpu_generic_shader_decisions();
-    decisions->wg_size                               = context.max_wg_size;
-    result.decisions                                 = decisions;
+    result.wgsl        = preprocessor.preprocess(shader_src, defines);
+    result.variant     = variant;
+    auto decisions     = std::make_shared<ggml_webgpu_generic_shader_decisions>();
+    decisions->wg_size = context.max_wg_size;
+    result.decisions   = decisions;
     return result;
 }
 
@@ -522,6 +523,30 @@ struct ggml_webgpu_scale_pipeline_key_hash {
     }
 };
 
+/** Binary **/
+
+struct ggml_webgpu_binary_pipeline_key {
+    int  type;
+    int  op;
+    bool inplace;
+    bool overlap;
+
+    bool operator==(const ggml_webgpu_binary_pipeline_key & other) const {
+        return type == other.type && op == other.op && inplace == other.inplace && overlap == other.overlap;
+    }
+};
+
+struct ggml_webgpu_binary_pipeline_key_hash {
+    size_t operator()(const ggml_webgpu_binary_pipeline_key & key) const {
+        size_t seed = 0;
+        ggml_webgpu_hash_combine(seed, key.type);
+        ggml_webgpu_hash_combine(seed, key.op);
+        ggml_webgpu_hash_combine(seed, key.inplace);
+        ggml_webgpu_hash_combine(seed, key.overlap);
+        return seed;
+    }
+};
+
 struct ggml_webgpu_scale_shader_lib_context {
     ggml_webgpu_scale_pipeline_key key;
     uint32_t                       max_wg_size;
@@ -535,18 +560,64 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_scale_shader(
     std::string              variant = "scale";
 
     if (context.key.inplace) {
+    defines.push_back("INPLACE");
+    variant += "_inplace";
+  }
+
+  defines.push_back(std::string("WG_SIZE=") +
+                    std::to_string(context.max_wg_size));
+
+  ggml_webgpu_processed_shader result;
+  result.wgsl = preprocessor.preprocess(shader_src, defines);
+  result.variant = variant;
+  auto decisions     = std::make_shared<ggml_webgpu_generic_shader_decisions>();
+  decisions->wg_size = context.max_wg_size;
+  result.decisions = decisions;
+  return result;
+}
+struct ggml_webgpu_binary_shader_lib_context {
+    ggml_webgpu_binary_pipeline_key key;
+    uint32_t                        max_wg_size;
+};
+
+inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_binary_shader(
+    pre_wgsl::Preprocessor &                      preprocessor,
+    const char *                                  shader_src,
+    const ggml_webgpu_binary_shader_lib_context & context) {
+    std::vector<std::string> defines;
+    std::string              op_name = ggml_op_name((ggml_op) context.key.op);
+    std::string              variant = op_name;
+
+    defines.push_back(std::string("OP_") + op_name);
+
+    switch (context.key.type) {
+        case GGML_TYPE_F32:
+            defines.push_back("TYPE_F32");
+            variant += "_f32";
+            break;
+        case GGML_TYPE_F16:
+            defines.push_back("TYPE_F16");
+            variant += "_f16";
+            break;
+        default:
+            GGML_ABORT("Unsupported type for binary shader");
+    }
+
+    if (context.key.inplace) {
         defines.push_back("INPLACE");
         variant += "_inplace";
+    } else if (context.key.overlap) {
+        defines.push_back("OVERLAP");
+        variant += "_overlap";
     }
 
     defines.push_back(std::string("WG_SIZE=") + std::to_string(context.max_wg_size));
-
     ggml_webgpu_processed_shader result;
-    result.wgsl                                      = preprocessor.preprocess(shader_src, defines);
-    result.variant                                   = variant;
-    ggml_webgpu_generic_shader_decisions * decisions = new ggml_webgpu_generic_shader_decisions();
-    decisions->wg_size                               = context.max_wg_size;
-    result.decisions                                 = decisions;
+    result.wgsl        = preprocessor.preprocess(shader_src, defines);
+    result.variant     = variant;
+    auto decisions     = std::make_shared<ggml_webgpu_generic_shader_decisions>();
+    decisions->wg_size = context.max_wg_size;
+    result.decisions   = decisions;
     return result;
 }
 
@@ -669,7 +740,7 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_get_rows_shader(
     result.variant = variant;
 
     // Create decisions structure to store workgroup size
-    ggml_webgpu_generic_shader_decisions * decisions = new ggml_webgpu_generic_shader_decisions();
+  auto decisions     = std::make_shared<ggml_webgpu_generic_shader_decisions>();
     decisions->wg_size                               = context.max_wg_size;
     result.decisions                                 = decisions;
 
@@ -891,7 +962,7 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
     result.wgsl    = preprocessor.preprocess(shader_src, defines);
     result.variant = variant;
 
-    ggml_webgpu_mul_mat_shader_decisions * decisions = new ggml_webgpu_mul_mat_shader_decisions();
+    auto decisions = std::make_shared<ggml_webgpu_mul_mat_shader_decisions>();
     decisions->tile_m                                = WEBGPU_MUL_MAT_TILE_M;
     decisions->tile_n                                = WEBGPU_MUL_MAT_TILE_N;
     decisions->tile_k              = context.key.is_vec ? WEBGPU_MUL_MAT_VEC_TILE_K : WEBGPU_MUL_MAT_TILE_K;
