@@ -261,7 +261,9 @@ fn main(
 
     // Store back to global memory
     if (output_row < params.m && thread_group % {{VEC_SIZE}} == 0 && thread_in_group == 0) {
-        dst[dst_idx / {{VEC_SIZE}}] = store_val(group_base);
+//        dst[dst_idx / {{VEC_SIZE}}] = store_val(group_base);
+        dst[dst_idx / {{VEC_SIZE}}] = vec4<f32>(42.0f);
+
     }
 }
 #end(SHADER)

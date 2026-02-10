@@ -1411,11 +1411,11 @@ struct test_case {
             double err = ud->tc->err(f1.data(), f2.data(), f1.size());
             if (err > ud->tc->max_err(ud->backend1)) {
                 printf("[%s] ERR = %.9f > %.9f ", ggml_op_desc(t1), err, ud->tc->max_err(ud->backend1));
-                //for (int i = 0; i < (int) f1.size(); i++) {
-                //    printf("%5d %9.6f %9.6f, diff = %9.6f\n", i, f1[i], f2[i], f1[i] - f2[i]);
-                //}
-                //printf("\n");
-                //exit(1);
+                for (int i = 0; i < (int) f1.size(); i++) {
+                    printf("%5d %9.6f %9.6f, diff = %9.6f\n", i, f1[i], f2[i], f1[i] - f2[i]);
+                }
+                printf("\n");
+                exit(1);
                 ud->ok = false;
             }
             return true;
@@ -8774,7 +8774,7 @@ static void usage(char ** argv) {
 int main(int argc, char ** argv) {
     test_mode mode = MODE_TEST;
     output_formats output_format = CONSOLE;
-    const char * op_names_filter = nullptr;
+    const char * op_names_filter = "MUL_MAT(type_a=f32,type_b=f32,m=16,n=1,k=256,bs=[1,1],nr=[1,1],per=[0,1,2,3],k_v=0,o=1)";
     const char * backend_filter = nullptr;
     const char * params_filter = nullptr;
 

@@ -433,6 +433,27 @@ static webgpu_pipeline ggml_webgpu_create_pipeline(wgpu::Device &               
 
     wgpu::ShaderModule shader_module = device.CreateShaderModule(&shader_desc);
 
+    // DEBUG: dump WGSL compilation diagnostics (async; prints to stdout)
+    shader_module.GetCompilationInfo(
+        wgpu::CallbackMode::AllowSpontaneous,
+        [label](wgpu::CompilationInfoRequestStatus status, const wgpu::CompilationInfo * info) {
+            if (status != wgpu::CompilationInfoRequestStatus::Success || info == nullptr) {
+                printf("wgsl: compilation info unavailable (status %d)\n", static_cast<int>(status));
+                return;
+            }
+            for (size_t i = 0; i < info->messageCount; ++i) {
+                const wgpu::CompilationMessage & msg = info->messages[i];
+                const char * sev = msg.type == wgpu::CompilationMessageType::Error   ? "ERROR" :
+                                  msg.type == wgpu::CompilationMessageType::Warning ? "WARN"  : "INFO";
+                printf("wgsl [%s]: %s (line %llu col %llu): %.*s\n",
+                    label, sev,
+                    (unsigned long long) msg.lineNum,
+                    (unsigned long long) msg.linePos,
+                    (int) msg.message.length, msg.message.data);
+            }
+        });
+
+
     wgpu::ComputePipelineDescriptor pipeline_desc;
     pipeline_desc.label              = label;
     pipeline_desc.compute.module     = shader_module;
@@ -1160,6 +1181,7 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
             wg_x = wg_m * wg_n * dst->ne[2] * dst->ne[3];
         }
     }
+    emscripten_log(EM_LOG_DEBUG, "ggml_webgpu_mul_mat: wg_x: %u, wg_y: %u, use_fast: %d", wg_x, wg_y, use_fast);
     return ggml_backend_webgpu_build(ctx->global_ctx, ctx->param_buf_pool, pipeline, params, entries, wg_x, wg_y);
 }
 
@@ -2477,6 +2499,13 @@ static void ggml_webgpu_init_memset_pipeline(webgpu_global_context & ctx) {
 }
 
 static void ggml_webgpu_init_mul_mat_pipeline(webgpu_context & webgpu_ctx) {
+    webgpu_ctx->mul_mat_pipelines[GGML_TYPE_F32][GGML_TYPE_F32][0] =
+        ggml_webgpu_create_pipeline(webgpu_ctx->global_ctx->device, wgsl_mul_mat_f32_f32, "mul_mat_f32_f32");
+    webgpu_ctx->mul_mat_pipelines[GGML_TYPE_F16][GGML_TYPE_F32][0] =
+        ggml_webgpu_create_pipeline(webgpu_ctx->global_ctx->device, wgsl_mul_mat_f16_f32, "mul_mat_f16_f32");
+    webgpu_ctx->mul_mat_pipelines[GGML_TYPE_F16][GGML_TYPE_F16][0] =
+        ggml_webgpu_create_pipeline(webgpu_ctx->global_ctx->device, wgsl_mul_mat_f16_f16, "mul_mat_f16_f16");
+
     // Q4/Q5/Q8 classic quantizations
     webgpu_ctx->mul_mat_pipelines[GGML_TYPE_Q4_0][GGML_TYPE_F32][0] =
         ggml_webgpu_create_pipeline(webgpu_ctx->global_ctx->device, wgsl_mul_mat_q4_0_f32, "mul_mat_q4_0_f32");

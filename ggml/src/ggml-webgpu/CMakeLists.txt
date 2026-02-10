@@ -64,7 +64,7 @@ endif()
 if (GGML_WEBGPU_DEBUG)
     target_compile_definitions(ggml-webgpu PRIVATE GGML_WEBGPU_DEBUG=1)
     if(EMSCRIPTEN)
-        target_link_options(ggml-webgpu INTERFACE "-sASSERTIONS=2")
+        target_link_options(ggml-webgpu INTERFACE "-sASSERTIONS=1")
     endif()
 endif()
 
