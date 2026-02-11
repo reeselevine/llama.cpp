@@ -82,10 +82,15 @@ fn inner_dot(src0_val: {{SRC0_TYPE}}, src1_val: {{SRC1_TYPE}}) -> f32 {
 }
 
 fn store_val(group_base: u32) -> vec4<f32> {
-    return vec4<f32>(partial_sums[group_base],
-                     partial_sums[group_base + THREADS_PER_OUTPUT],
-                     partial_sums[group_base + THREADS_PER_OUTPUT * 2],
-                     partial_sums[group_base + THREADS_PER_OUTPUT * 3]);
+//    return vec4<f32>(partial_sums[group_base],
+//                     partial_sums[group_base + THREADS_PER_OUTPUT],
+//                     partial_sums[group_base + THREADS_PER_OUTPUT * 2],
+//                     partial_sums[group_base + THREADS_PER_OUTPUT * 3]);
+    return vec4<f32>(42.0f,
+                     42.0f,
+                     42.0f,
+                     42.0f);
+
 }
 #enddecl(VEC)
 
@@ -95,7 +100,8 @@ fn inner_dot(src0_val: {{SRC0_TYPE}}, src1_val: {{SRC1_TYPE}}) -> f32 {
 }
 
 fn store_val(group_base: u32) -> f32 {
-    return partial_sums[group_base];
+//    return partial_sums[group_base];
+    return 42.0f;
 }
 #enddecl(SCALAR)
 
@@ -194,6 +200,7 @@ fn main(
     @builtin(local_invocation_id) local_id: vec3<u32>,
     @builtin(workgroup_id) wg_id: vec3<u32>,
     @builtin(num_workgroups) num_wg: vec3<u32>) {
+    dst[0] = {{DST_TYPE}}(42.0f);
     let thread_id = local_id.x;
 
     // Handle batch dimensions
@@ -261,9 +268,7 @@ fn main(
 
     // Store back to global memory
     if (output_row < params.m && thread_group % {{VEC_SIZE}} == 0 && thread_in_group == 0) {
-//        dst[dst_idx / {{VEC_SIZE}}] = store_val(group_base);
-        dst[dst_idx / {{VEC_SIZE}}] = vec4<f32>(42.0f);
-
+        dst[dst_idx / {{VEC_SIZE}}] = store_val(group_base);
     }
 }
 #end(SHADER)

@@ -1144,8 +1144,8 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
             break;
     }
 
+    int vectorized = src0->ne[0] % 4 == 0 && dst->ne[0] % 4 == 0 && dst->ne[1] % 4 == 0;
     if (use_fast) {
-        int vectorized = src0->ne[0] % 4 == 0 && dst->ne[0] % 4 == 0 && dst->ne[1] % 4 == 0;
         if (dst->ne[1] == 1) {
             // We don't support vectorized mul_mat_vec for quantized types
             vectorized             = vectorized && (src0->type < 2);
@@ -1181,7 +1181,7 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
             wg_x = wg_m * wg_n * dst->ne[2] * dst->ne[3];
         }
     }
-    emscripten_log(EM_LOG_DEBUG, "ggml_webgpu_mul_mat: wg_x: %u, wg_y: %u, use_fast: %d", wg_x, wg_y, use_fast);
+    emscripten_log(EM_LOG_DEBUG, "ggml_webgpu_mul_mat: wg_x: %u, wg_y: %u, use_fast: %d, use_vectorized: %d", wg_x, wg_y, use_fast, vectorized);
     return ggml_backend_webgpu_build(ctx->global_ctx, ctx->param_buf_pool, pipeline, params, entries, wg_x, wg_y);
 }
 
