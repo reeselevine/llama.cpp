@@ -301,7 +301,8 @@ struct webgpu_global_context_struct {
     webgpu_capabilities  capabilities;
     // Shared buffer to move data from device to host
     wgpu::Buffer         get_tensor_staging_buf;
-    // Global mutex for pipeline and staging buffer, will be refactored to exclude pipeline caches.
+    // Global mutex for pipeline and staging buffer, will be refactored to exclude
+    // pipeline caches.
     std::recursive_mutex mutex;
 
     webgpu_buf_pool                memset_buf_pool;
@@ -403,7 +404,8 @@ typedef std::shared_ptr<webgpu_context_struct> webgpu_context;
 
 // Metadata required for the ggml backend registration/discovery interface
 struct ggml_backend_webgpu_reg_context {
-    // Since the Instance is a global entrypoint into the WebGPU API, it lives here
+    // Since the Instance is a global entrypoint into the WebGPU API, it lives
+    // here
     webgpu_global_context webgpu_global_ctx;
     size_t                device_count;
     const char *          name;
@@ -416,7 +418,8 @@ struct ggml_backend_webgpu_device_context {
     std::string           device_desc;
 };
 
-// Per-thread data required to actually run WebGPU operations in a backend instance
+// Per-thread data required to actually run WebGPU operations in a backend
+// instance
 struct ggml_backend_webgpu_context {
     webgpu_context webgpu_ctx;
     std::string    name;
@@ -548,9 +551,11 @@ static void ggml_backend_webgpu_map_buffer(webgpu_global_context & ctx,
 }
 
 #ifdef GGML_WEBGPU_DEBUG
-// This function adds debugging information to shaders, as WebGPU does not support printing directly.
-// To use, add a bind group entry to the setup for the shader you are debugging, add the buffer and
-// debug statements in the shader, and then call this function after encoding the commands and submitting them.
+// This function adds debugging information to shaders, as WebGPU does not
+// support printing directly. To use, add a bind group entry to the setup for
+// the shader you are debugging, add the buffer and debug statements in the
+// shader, and then call this function after encoding the commands and
+// submitting them.
 static void ggml_backend_webgpu_debug(webgpu_global_context & ctx) {
     wgpu::CommandEncoder encoder = ctx->device.CreateCommandEncoder();
     encoder.CopyBufferToBuffer(ctx->debug_dev_buf, 0, ctx->debug_host_buf, 0, ctx->debug_host_buf.GetSize());
@@ -854,7 +859,8 @@ static bool ggml_webgpu_tensor_equal(ggml_tensor * a, ggml_tensor * b) {
            (ggml_webgpu_tensor_offset(a) == ggml_webgpu_tensor_offset(b));
 }
 
-// Used to determine if two tensors share the same buffer and their byte ranges overlap,
+// Used to determine if two tensors share the same buffer and their byte ranges
+// overlap,
 static bool ggml_webgpu_tensor_overlap(ggml_tensor * a, ggml_tensor * b) {
     return (ggml_webgpu_tensor_buf(a).Get() == ggml_webgpu_tensor_buf(b).Get()) &&
            ggml_webgpu_tensor_offset(a) < (ggml_webgpu_tensor_offset(b) + ggml_nbytes(b)) &&
@@ -987,7 +993,10 @@ static std::optional<webgpu_command> ggml_webgpu_set_rows(webgpu_context & ctx,
     }
 
     ggml_webgpu_shader_lib_context shader_lib_ctx = {
-        .src0 = src, .src1 = idx, .dst = dst, .max_wg_size = ctx->global_ctx->capabilities.limits.maxComputeInvocationsPerWorkgroup
+        .src0        = src,
+        .src1        = idx,
+        .dst         = dst,
+        .max_wg_size = ctx->global_ctx->capabilities.limits.maxComputeInvocationsPerWorkgroup
     };
 
     webgpu_pipeline pipeline = ctx->shader_lib->get_set_rows_pipeline(shader_lib_ctx);
@@ -1150,6 +1159,17 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
                 case GGML_TYPE_F32:
                 case GGML_TYPE_F16:
                 case GGML_TYPE_Q4_0:
+                case GGML_TYPE_Q4_1:
+                case GGML_TYPE_Q5_0:
+                case GGML_TYPE_Q5_1:
+                case GGML_TYPE_Q8_0:
+                case GGML_TYPE_Q8_1:
+                case GGML_TYPE_Q2_K:
+                case GGML_TYPE_Q3_K:
+                case GGML_TYPE_Q4_K:
+                case GGML_TYPE_Q5_K:
+                case GGML_TYPE_Q6_K:
+                    // For quantized types: only use fast path for non-vec (tiled) operations
                     use_fast = true;
                     break;
                 default:
@@ -1299,6 +1319,7 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
                 decisions->subgroup_n * decisions->subgroup_matrix_n * ctx->global_ctx->capabilities.sg_mat_n;
             wg_n = CEIL_DIV(dst->ne[1], wg_n_sg_tile);
         } else {
+            // Original logic for FP16/FP32 and 32-element block types
             uint32_t tile_m_s = decisions->tile_m * decisions->wg_size_m;
             uint32_t tile_n_s = decisions->tile_n * decisions->wg_size_n;
             wg_m              = CEIL_DIV(dst->ne[0], tile_m_s);
@@ -2459,7 +2480,8 @@ static void ggml_backend_webgpu_buffer_get_tensor(ggml_backend_buffer_t buffer,
     // Map the staging buffer to read the data
     ggml_backend_webgpu_map_buffer(buf_ctx->global_ctx, buf_ctx->global_ctx->get_tensor_staging_buf,
                                    wgpu::MapMode::Read, 0, final_size);
-    // Must specify size here since the staging buffer might be larger than the tensor size
+    // Must specify size here since the staging buffer might be larger than the
+    // tensor size
     const void * mapped_range = buf_ctx->global_ctx->get_tensor_staging_buf.GetConstMappedRange(0, final_size);
 
     // Copy the data from the mapped range to the output buffer
@@ -2770,7 +2792,8 @@ static bool create_webgpu_device(ggml_backend_webgpu_reg_context * ctx) {
     wgpu::RequestAdapterOptions options = {};
 
 #ifndef __EMSCRIPTEN__
-    // TODO: track need for these toggles: https://issues.chromium.org/issues/42251215
+    // TODO: track need for these toggles:
+    // https://issues.chromium.org/issues/42251215
     const char * const          adapterEnabledToggles[] = { "vulkan_enable_f16_on_nvidia", "use_vulkan_memory_model" };
     wgpu::DawnTogglesDescriptor adapterTogglesDesc;
     adapterTogglesDesc.enabledToggles     = adapterEnabledToggles;
@@ -2826,8 +2849,9 @@ static bool create_webgpu_device(ggml_backend_webgpu_reg_context * ctx) {
     ctx->webgpu_global_ctx->capabilities.supports_subgroup_matrix = valid_subgroup_matrix_config;
 #endif
 
-    // For subgroup matrix code to be the most efficient, we would like the subgroup size to be consistent and accurate.
-    // Unfortunately, that is not possible, so we use the maximum subgroup size reported by the adapter.
+    // For subgroup matrix code to be the most efficient, we would like the
+    // subgroup size to be consistent and accurate. Unfortunately, that is not
+    // possible, so we use the maximum subgroup size reported by the adapter.
     ctx->webgpu_global_ctx->capabilities.max_subgroup_size = info.subgroupMaxSize;
     // Initialize device
     std::vector<wgpu::FeatureName> required_features       = { wgpu::FeatureName::ShaderF16 };
@@ -2867,7 +2891,8 @@ static bool create_webgpu_device(ggml_backend_webgpu_reg_context * ctx) {
 
 #ifndef __EMSCRIPTEN__
     // Enable Dawn-specific toggles to increase native performance
-    // TODO: Maybe WebGPU needs a "fast" mode where you can request compilers skip adding checks like these,
+    // TODO: Maybe WebGPU needs a "fast" mode where you can request compilers skip
+    // adding checks like these,
     //       only for native performance?
     const char * const deviceEnabledToggles[]  = { "skip_validation", "disable_robustness", "disable_workgroup_init",
                                                    "disable_polyfills_on_integer_div_and_mod" };
@@ -2909,7 +2934,8 @@ static bool create_webgpu_device(ggml_backend_webgpu_reg_context * ctx) {
 #endif
 
     GGML_LOG_INFO(
-        "ggml_webgpu: adapter_info: vendor_id: %u | vendor: %s | architecture: %s | device_id: %u | name: %s | "
+        "ggml_webgpu: adapter_info: vendor_id: %u | vendor: %s | "
+        "architecture: %s | device_id: %u | name: %s | "
         "device_desc: %s\n",
         info.vendorID, std::string(info.vendor).c_str(), std::string(info.architecture).c_str(), info.deviceID,
         std::string(info.device).c_str(), std::string(info.description).c_str());
@@ -2975,9 +3001,12 @@ static ggml_backend_buffer_type_t ggml_backend_webgpu_device_get_buffer_type(ggm
         /* .iface = */ {
                         /* .get_name         = */ ggml_backend_webgpu_buffer_type_get_name,
                         /* .alloc_buffer     = */
-            ggml_backend_webgpu_buffer_type_alloc_buffer,  /* .get_alignment    = */
-            ggml_backend_webgpu_buffer_type_get_alignment, /* .get_max_size     = */
-            ggml_backend_webgpu_buffer_type_get_max_size,  /* .get_alloc_size   = */
+            ggml_backend_webgpu_buffer_type_alloc_buffer,  /* .get_alignment    =
+                                                          */
+            ggml_backend_webgpu_buffer_type_get_alignment, /* .get_max_size     =
+                                                          */
+            ggml_backend_webgpu_buffer_type_get_max_size,  /* .get_alloc_size   =
+                                                          */
             ggml_backend_webgpu_buffer_type_get_alloc_size, /* .is_host          = */ NULL,                // defaults to false
         },
         /* .device  = */
@@ -3028,7 +3057,8 @@ static bool ggml_backend_webgpu_device_supports_op(ggml_backend_dev_t dev, const
     ggml_tensor * src1 = op->src[1];
     ggml_tensor * src2 = op->src[2];
 
-    // on smaller devices (or CI), tensors may be larger than the max storage buffer size
+    // on smaller devices (or CI), tensors may be larger than the max storage
+    // buffer size
     if (ggml_nbytes(op) > ctx->webgpu_global_ctx->capabilities.limits.maxStorageBufferBindingSize ||
         (src0 != nullptr &&
          ggml_nbytes(src0) > ctx->webgpu_global_ctx->capabilities.limits.maxStorageBufferBindingSize) ||
@@ -3349,7 +3379,9 @@ ggml_backend_reg_t ggml_backend_webgpu_reg() {
 
 #ifdef __EMSCRIPTEN__
     if (ctx.webgpu_global_ctx->instance == nullptr) {
-        GGML_LOG_ERROR("ggml_webgpu: Failed to create WebGPU instance. Make sure either -sASYNCIFY or -sJSPI is set\n");
+        GGML_LOG_ERROR(
+            "ggml_webgpu: Failed to create WebGPU instance. Make sure "
+            "either -sASYNCIFY or -sJSPI is set\n");
         return nullptr;
     }
 #endif

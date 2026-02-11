@@ -72,6 +72,565 @@ fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
 }
 #endif
 
+#ifdef MUL_ACC_Q4_1
+
+const BLOCK_SIZE = 32;
+const NQ = 16u; // number of weights per thread
+const F16_PER_BLOCK = 10u;
+const WEIGHTS_PER_F16 = 4u; // 4 weights per f16
+const F16_PER_THREAD = NQ / WEIGHTS_PER_F16;
+
+fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
+    var local_sum = 0.0;
+    for (var i = tig * NQ; i < tile_size; i += THREADS_PER_OUTPUT * NQ) {
+        let blck_idx = i / BLOCK_SIZE;
+        let block_offset = (i % BLOCK_SIZE) / WEIGHTS_PER_F16;
+        let scale_idx = (idx_base + k_outer / BLOCK_SIZE + blck_idx) * F16_PER_BLOCK;
+        // each f16 contains offsets [block_offset, block_offset + 1] and [block_offset + 16, block_offset + 17]
+        let shmem_idx = blck_idx * BLOCK_SIZE + block_offset * 2u;
+        let d = f32(src0[scale_idx]);
+        let m = f32(src0[scale_idx + 1u]);
+        for (var j = 0u; j < F16_PER_THREAD; j += 2) {
+            let q_0 = src0[scale_idx + 2u + block_offset + j];
+            let q_1 = src0[scale_idx + 2u + block_offset + j + 1];
+            let q_packed = bitcast<u32>(vec2(q_0, q_1));
+            for (var k: u32 = 0; k < 4; k++) {
+                let q_byte = get_byte(q_packed, k);
+                let q_hi = f32((q_byte >> 4) & 0xF) * d + m;
+                let q_lo = f32(q_byte & 0xF) * d + m;
+                local_sum += q_lo * shared_vector[shmem_idx + j * 2 + k];
+                local_sum += q_hi * shared_vector[shmem_idx + j * 2 + k + 16];
+            }
+        }
+    }
+    return local_sum;
+}
+#endif
+
+#ifdef MUL_ACC_Q5_0
+
+const BLOCK_SIZE = 32;
+const NQ = 16u; // number of weights per thread
+const F16_PER_BLOCK = 11u;
+const WEIGHTS_PER_F16 = 4u; // 4 weights per f16
+const F16_PER_THREAD = NQ / WEIGHTS_PER_F16;
+
+fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
+    var local_sum = 0.0;
+    for (var i = tig * NQ; i < tile_size; i += THREADS_PER_OUTPUT * NQ) {
+        let blck_idx = i / BLOCK_SIZE;
+        let block_offset = (i % BLOCK_SIZE) / WEIGHTS_PER_F16;
+        let scale_idx = (idx_base + k_outer / BLOCK_SIZE + blck_idx) * F16_PER_BLOCK;
+        // each f16 contains offsets [block_offset, block_offset + 1] and [block_offset + 16, block_offset + 17]
+        let shmem_idx = blck_idx * BLOCK_SIZE + block_offset * 2u;
+        let d = f32(src0[scale_idx]);
+        let qh0 = src0[scale_idx + 1u];
+        let qh1 = src0[scale_idx + 2u];
+        let qh_packed = bitcast<u32>(vec2(qh0, qh1));
+
+        for (var j = 0u; j < 2; j++) {
+            let q_0 = src0[scale_idx + 3u + block_offset + (j*2)];
+            let q_1 = src0[scale_idx + 3u + block_offset + (j*2) + 1u];
+            let q_packed = bitcast<u32>(vec2(q_0, q_1));
+
+            let j_adjusted = j + (block_offset / 2u);
+
+            for (var k: u32 = 0; k < 4; k++) {
+                let q_byte = get_byte(q_packed, k);
+
+                let qh_hi = (qh_packed >> (j_adjusted * 4 + k + 12)) & 0x10;
+                let q_hi = (f32(((q_byte >> 4) & 0xF) | qh_hi) - 16.0) * d;
+                let qh_lo = ((qh_packed >> (j_adjusted * 4 + k)) << 4) & 0x10;
+                let q_lo = (f32((q_byte & 0xF) | qh_lo) - 16.0) * d;
+
+                local_sum += q_lo * shared_vector[shmem_idx + j * 4 + k];
+                local_sum += q_hi * shared_vector[shmem_idx + j * 4 + k + 16];
+            }
+
+        }
+    }
+    return local_sum;
+}
+#endif
+
+
+#ifdef MUL_ACC_Q5_1
+
+const BLOCK_SIZE = 32;
+const NQ = 16u; // number of weights per thread
+const F16_PER_BLOCK = 12u;
+const WEIGHTS_PER_F16 = 4u; // 4 weights per f16
+const F16_PER_THREAD = NQ / WEIGHTS_PER_F16;
+
+fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
+    var local_sum = 0.0;
+    for (var i = tig * NQ; i < tile_size; i += THREADS_PER_OUTPUT * NQ) {
+        let blck_idx = i / BLOCK_SIZE;
+        let block_offset = (i % BLOCK_SIZE) / WEIGHTS_PER_F16;
+        let scale_idx = (idx_base + k_outer / BLOCK_SIZE + blck_idx) * F16_PER_BLOCK;
+        // each f16 contains offsets [block_offset, block_offset + 1] and [block_offset + 16, block_offset + 17]
+        let shmem_idx = blck_idx * BLOCK_SIZE + block_offset * 2u;
+        let d = f32(src0[scale_idx]);
+        let m = src0[scale_idx + 1u];
+        let qh0 = src0[scale_idx + 2u];
+        let qh1 = src0[scale_idx + 3u];
+        let qh_packed = bitcast<u32>(vec2(qh0, qh1));
+
+        for (var j = 0u; j < 2; j++) {
+            let q_0 = src0[scale_idx + 4u + block_offset + (j*2)];
+            let q_1 = src0[scale_idx + 4u + block_offset + (j*2) + 1u];
+            let q_packed = bitcast<u32>(vec2(q_0, q_1));
+
+            let j_adjusted = j + (block_offset / 2u);
+
+            for (var k: u32 = 0; k < 4; k++) {
+                let q_byte = get_byte(q_packed, k);
+
+                let qh_hi = (qh_packed >> (j_adjusted * 4 + k + 12)) & 0x10;
+                let q_hi = f32(((q_byte >> 4) & 0xF) | qh_hi) * d + f32(m);
+                let qh_lo = ((qh_packed >> (j_adjusted * 4 + k)) << 4) & 0x10;
+                let q_lo = f32((q_byte & 0xF) | qh_lo) * d + f32(m);
+
+                local_sum += q_lo * shared_vector[shmem_idx + j * 4 + k];
+                local_sum += q_hi * shared_vector[shmem_idx + j * 4 + k + 16];
+            }
+
+        }
+    }
+    return local_sum;
+}
+#endif
+
+
+#ifdef MUL_ACC_Q8_0
+
+const BLOCK_SIZE = 32;
+const NQ = 16u; // number of weights per thread
+const F16_PER_BLOCK = 17u;
+const WEIGHTS_PER_F16 = 2u; 
+const F16_PER_THREAD = NQ / WEIGHTS_PER_F16;
+
+fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
+    var local_sum = 0.0;
+    for (var i = tig * NQ; i < tile_size; i += THREADS_PER_OUTPUT * NQ) {
+        let blck_idx = i / BLOCK_SIZE;
+        let block_offset = (i % BLOCK_SIZE) / WEIGHTS_PER_F16;
+        let scale_idx = (idx_base + k_outer / BLOCK_SIZE + blck_idx) * F16_PER_BLOCK;
+        // each f16 contains offsets [block_offset, block_offset + 1] and [block_offset + 16, block_offset + 17]
+        let shmem_idx = blck_idx * BLOCK_SIZE + block_offset * 2u;
+        let d = f32(src0[scale_idx]);
+
+        for (var j = 0u; j < F16_PER_THREAD; j += 2) {
+            let q_0 = src0[scale_idx + 1 + block_offset + j];
+            let q_1 = src0[scale_idx + 1 + block_offset + j + 1];
+            let q_packed = bitcast<u32>(vec2(q_0, q_1));
+            for (var k: u32 = 0; k < 4; k++) {
+                let q_byte = get_byte_i32(q_packed, k);
+                let q_val = f32(q_byte) * d;
+                local_sum += q_val * shared_vector[shmem_idx + j * 2 + k];
+            }
+        }
+    }
+    return local_sum;
+}
+#endif
+
+
+#ifdef MUL_ACC_Q8_1
+
+const BLOCK_SIZE = 32;
+const NQ = 16u; // number of weights per thread
+const F16_PER_BLOCK = 18u;
+const WEIGHTS_PER_F16 = 2u; 
+const F16_PER_THREAD = NQ / WEIGHTS_PER_F16;
+
+fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
+    var local_sum = 0.0;
+    for (var i = tig * NQ; i < tile_size; i += THREADS_PER_OUTPUT * NQ) {
+        let blck_idx = i / BLOCK_SIZE;
+        let block_offset = (i % BLOCK_SIZE) / WEIGHTS_PER_F16;
+        let scale_idx = (idx_base + k_outer / BLOCK_SIZE + blck_idx) * F16_PER_BLOCK;
+        // each f16 contains offsets [block_offset, block_offset + 1] and [block_offset + 16, block_offset + 17]
+        let shmem_idx = blck_idx * BLOCK_SIZE + block_offset * 2u;
+        let d = f32(src0[scale_idx]);
+        let m = src0[scale_idx + 1u];
+
+        for (var j = 0u; j < F16_PER_THREAD; j += 2) {
+            let q_0 = src0[scale_idx + 2u + block_offset + j];
+            let q_1 = src0[scale_idx + 2u + block_offset + j + 1];
+            let q_packed = bitcast<u32>(vec2(q_0, q_1));
+            for (var k: u32 = 0; k < 4; k++) {
+                let q_byte = get_byte_i32(q_packed, k);
+                let q_val = f32(q_byte) * d + f32(m);
+                local_sum += q_val * shared_vector[shmem_idx + j * 2 + k];
+            }
+        }
+    }
+    return local_sum;
+}
+#endif
+
+#ifdef MUL_ACC_Q2_K
+
+const BLOCK_SIZE = 256;
+const F16_PER_BLOCK = 42u;
+
+fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
+    var local_sum = 0.0;
+    for (var i = tig; i < tile_size; i += THREADS_PER_OUTPUT) {
+        let k_global = k_outer + i;
+        let block_k = k_global / BLOCK_SIZE;
+        let k_in_block = k_global % BLOCK_SIZE;
+        
+        let scale_idx = (idx_base + block_k) * F16_PER_BLOCK;
+        
+        let d = f32(src0[scale_idx + 40u]);
+        let dmin = f32(src0[scale_idx + 41u]);
+        
+        let block_of_32 = k_in_block / 32u;
+        let pos_in_32 = k_in_block % 32u;
+        
+        let q_b_idx = (block_of_32 / 4u) * 32u;
+        let shift = (block_of_32 % 4u) * 2u;
+        let k = (pos_in_32 / 16u) * 16u;
+        let l = pos_in_32 % 16u;
+        
+        let is = k_in_block / 16u;
+        
+        let sc_0 = src0[scale_idx + 2u * (is / 4u)];
+        let sc_1 = src0[scale_idx + 2u * (is / 4u) + 1u];
+        let sc_packed = bitcast<u32>(vec2(sc_0, sc_1));
+        let sc = get_byte(sc_packed, is % 4u);
+        
+        let dl = d * f32(sc & 0xFu);
+        let ml = dmin * f32(sc >> 4u);
+        
+        let q_idx = q_b_idx + k + l;
+        let q_0 = src0[scale_idx + 8u + 2u * (q_idx / 4u)];
+        let q_1 = src0[scale_idx + 8u + 2u * (q_idx / 4u) + 1u];
+        let q_packed = bitcast<u32>(vec2(q_0, q_1));
+        let q_byte = get_byte(q_packed, q_idx % 4u);
+        let qs_val = (q_byte >> shift) & 3u;
+        
+        let q_val = f32(qs_val) * dl - ml;
+        local_sum += q_val * shared_vector[i];
+    }
+    return local_sum;
+}
+#endif
+
+#ifdef MUL_ACC_Q3_K
+
+const BLOCK_SIZE = 256;
+const F16_PER_BLOCK = 55u;
+
+fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
+    var local_sum = 0.0;
+    for (var i = tig; i < tile_size; i += THREADS_PER_OUTPUT) {
+        let k_global = k_outer + i;
+        let block_k = k_global / BLOCK_SIZE;
+        let k_in_block = k_global % BLOCK_SIZE;
+        
+        let scale_idx = (idx_base + block_k) * F16_PER_BLOCK;
+        
+        let d = f32(src0[scale_idx + 54u]);
+        
+        // Load and unpack scales
+        let kmask1: u32 = 0x03030303u;
+        let kmask2: u32 = 0x0f0f0f0fu;
+        
+        var scale_vals: array<u32, 4>;
+        for (var si: u32 = 0u; si < 4u; si++) {
+            let scale_0 = src0[scale_idx + 48u + (2u*si)];
+            let scale_1 = src0[scale_idx + 48u + (2u*si) + 1u];
+            scale_vals[si] = bitcast<u32>(vec2(scale_0, scale_1));
+        }
+        
+        var tmp: u32 = scale_vals[2];
+        scale_vals[2] = ((scale_vals[0] >> 4u) & kmask2) | (((tmp >> 4u) & kmask1) << 4u);
+        scale_vals[3] = ((scale_vals[1] >> 4u) & kmask2) | (((tmp >> 6u) & kmask1) << 4u);
+        scale_vals[0] = (scale_vals[0] & kmask2) | ((tmp & kmask1) << 4u);
+        scale_vals[1] = (scale_vals[1] & kmask2) | (((tmp >> 2u) & kmask1) << 4u);
+        
+        // Load hmask and qs arrays
+        var hmask_vals: array<u32, 8>;
+        for (var hi: u32 = 0u; hi < 8u; hi++) {
+            let hmask_0 = src0[scale_idx + (2u*hi)];
+            let hmask_1 = src0[scale_idx + (2u*hi) + 1u];
+            hmask_vals[hi] = bitcast<u32>(vec2(hmask_0, hmask_1));
+        }
+        
+        var qs_vals: array<u32, 16>;
+        for (var qi: u32 = 0u; qi < 16u; qi++) {
+            let qs_0 = src0[scale_idx + 16u + (2u*qi)];
+            let qs_1 = src0[scale_idx + 16u + (2u*qi) + 1u];
+            qs_vals[qi] = bitcast<u32>(vec2(qs_0, qs_1));
+        }
+        
+        let half = k_in_block / 128u;
+        let pos_in_half = k_in_block % 128u;
+        let shift_group = pos_in_half / 32u;
+        let pos_in_32 = pos_in_half % 32u;
+        let k_group = pos_in_32 / 16u;
+        let l = pos_in_32 % 16u;
+        
+        let q_b_idx = half * 32u;
+        let shift = shift_group * 2u;
+        let k = k_group * 16u;
+        let is = k_in_block / 16u;
+        let m_shift = k_in_block / 32u;
+        let m: u32 = 1u << m_shift;
+        
+        let sc = get_byte(scale_vals[is / 4u], is % 4u);
+        let dl = d * (f32(sc) - 32.0);
+        
+        let q_idx = q_b_idx + k + l;
+        let hm_idx = k + l;
+        
+        let q_byte = get_byte(qs_vals[q_idx / 4u], q_idx % 4u);
+        let hmask_byte = get_byte(hmask_vals[hm_idx / 4u], hm_idx % 4u);
+        
+        let hm = select(4.0, 0.0, (hmask_byte & m) != 0);
+        let qs_val = (q_byte >> shift) & 3u;
+        
+        let q_val = (f32(qs_val) - hm) * dl;
+        local_sum += q_val * shared_vector[i];
+    }
+    return local_sum;
+}
+#endif
+
+#ifdef MUL_ACC_Q4_K
+
+const BLOCK_SIZE = 256;
+const F16_PER_BLOCK = 72u;
+
+fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
+    var local_sum = 0.0;
+    for (var i = tig; i < tile_size; i += THREADS_PER_OUTPUT) {
+        let k_global = k_outer + i;
+        let block_k = k_global / BLOCK_SIZE;
+        let k_in_block = k_global % BLOCK_SIZE;
+        
+        let scale_idx = (idx_base + block_k) * F16_PER_BLOCK;
+        
+        let d = f32(src0[scale_idx]);
+        let dmin = f32(src0[scale_idx + 1u]);
+        
+        var scale_vals: array<u32, 3>;
+        for (var si: u32 = 0u; si < 3u; si++) {
+            let scale_0 = src0[scale_idx + 2u + (2u*si)];
+            let scale_1 = src0[scale_idx + 2u + (2u*si) + 1u];
+            scale_vals[si] = bitcast<u32>(vec2(scale_0, scale_1));
+        }
+        
+        let group_of_64 = k_in_block / 64u;
+        let pos_in_64 = k_in_block % 64u;
+        let shift_group = pos_in_64 / 32u;
+        let l = pos_in_64 % 32u;
+        
+        let q_b_idx = group_of_64 * 32u;
+        let shift = shift_group * 4u;
+        let is = k_in_block / 32u;
+        
+        var sc: u32;
+        var mn: u32;
+        
+        if (is < 4u) {
+            let sc_byte = get_byte(scale_vals[is / 4u], is % 4u);
+            let min_byte = get_byte(scale_vals[(is + 4u) / 4u], is % 4u);
+            sc = sc_byte & 63u;
+            mn = min_byte & 63u;
+        } else {
+            let sc_min_lo = get_byte(scale_vals[(is + 4u) / 4u], (is + 4u) % 4u);
+            let sc_hi = get_byte(scale_vals[(is - 4u) / 4u], (is - 4u) % 4u);
+            let min_hi = get_byte(scale_vals[is / 4u], is % 4u);
+            
+            sc = (sc_min_lo & 0xFu) | ((sc_hi >> 6u) << 4u);
+            mn = (sc_min_lo >> 4u) | ((min_hi >> 6u) << 4u);
+        }
+        
+        let dl = d * f32(sc);
+        let ml = dmin * f32(mn);
+        
+        let q_idx = q_b_idx + l;
+        let q_0 = src0[scale_idx + 8u + 2u * (q_idx / 4u)];
+        let q_1 = src0[scale_idx + 8u + 2u * (q_idx / 4u) + 1u];
+        let q_packed = bitcast<u32>(vec2(q_0, q_1));
+        
+        let q_byte = get_byte(q_packed, q_idx % 4u);
+        let qs_val = (q_byte >> shift) & 0xFu;
+        
+        let q_val = f32(qs_val) * dl - ml;
+        local_sum += q_val * shared_vector[i];
+    }
+    return local_sum;
+}
+#endif
+
+#ifdef MUL_ACC_Q5_K
+
+const BLOCK_SIZE = 256;
+const F16_PER_BLOCK = 88u;
+
+fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
+    var local_sum = 0.0;
+    for (var i = tig; i < tile_size; i += THREADS_PER_OUTPUT) {
+        let k_global = k_outer + i;
+        let block_k = k_global / BLOCK_SIZE;
+        let k_in_block = k_global % BLOCK_SIZE;
+        
+        let scale_idx = (idx_base + block_k) * F16_PER_BLOCK;
+        
+        let d = f32(src0[scale_idx]);
+        let dmin = f32(src0[scale_idx + 1u]);
+        
+        var scale_vals: array<u32, 3>;
+        for (var si: u32 = 0u; si < 3u; si++) {
+            let scale_0 = src0[scale_idx + 2u + (2u*si)];
+            let scale_1 = src0[scale_idx + 2u + (2u*si) + 1u];
+            scale_vals[si] = bitcast<u32>(vec2(scale_0, scale_1));
+        }
+        
+        let group_of_64 = k_in_block / 64u;
+        let pos_in_64 = k_in_block % 64u;
+        let shift_group = pos_in_64 / 32u;
+        let l = pos_in_64 % 32u;
+        
+        let q_b_idx = group_of_64 * 32u;
+        let shift = shift_group * 4u;
+        let is = k_in_block / 32u;
+        let u_shift = k_in_block / 32u;
+        let u: u32 = 1u << u_shift;
+        
+        var sc: u32;
+        var mn: u32;
+        
+        if (is < 4u) {
+            let sc_byte = get_byte(scale_vals[is / 4u], is % 4u);
+            let min_byte = get_byte(scale_vals[(is + 4u) / 4u], is % 4u);
+            sc = sc_byte & 63u;
+            mn = min_byte & 63u;
+        } else {
+            let sc_min_lo = get_byte(scale_vals[(is + 4u) / 4u], (is + 4u) % 4u);
+            let sc_hi = get_byte(scale_vals[(is - 4u) / 4u], (is - 4u) % 4u);
+            let min_hi = get_byte(scale_vals[is / 4u], is % 4u);
+            
+            sc = (sc_min_lo & 0xFu) | ((sc_hi >> 6u) << 4u);
+            mn = (sc_min_lo >> 4u) | ((min_hi >> 6u) << 4u);
+        }
+        
+        let dl = d * f32(sc);
+        let ml = dmin * f32(mn);
+        
+        let q_idx = q_b_idx + l;
+        let q_0 = src0[scale_idx + 24u + 2u * (q_idx / 4u)];
+        let q_1 = src0[scale_idx + 24u + 2u * (q_idx / 4u) + 1u];
+        let q_packed = bitcast<u32>(vec2(q_0, q_1));
+        
+        let q_byte = get_byte(q_packed, q_idx % 4u);
+        
+        let qh_0 = src0[scale_idx + 8u + 2u * (l / 4u)];
+        let qh_1 = src0[scale_idx + 8u + 2u * (l / 4u) + 1u];
+        let qh_packed = bitcast<u32>(vec2(qh_0, qh_1));
+        
+        let qh_byte = get_byte(qh_packed, l % 4u);
+        
+        let qs_val = (q_byte >> shift) & 0xFu;
+        let qh_val = select(0.0, 16.0, (qh_byte & u) != 0);
+        
+        let q_val = (f32(qs_val) + qh_val) * dl - ml;
+        local_sum += q_val * shared_vector[i];
+    }
+    return local_sum;
+}
+#endif
+
+#ifdef MUL_ACC_Q6_K
+
+const BLOCK_SIZE = 256;
+const F16_PER_BLOCK = 105u;
+
+fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
+    var local_sum = 0.0;
+    for (var i = tig; i < tile_size; i += THREADS_PER_OUTPUT) {
+        let k_global = k_outer + i;
+        let block_k = k_global / BLOCK_SIZE;
+        let k_in_block = k_global % BLOCK_SIZE;
+        
+        let scale_idx = (idx_base + block_k) * F16_PER_BLOCK;
+        
+        let d = f32(src0[scale_idx + 104u]);
+        
+        var scale_vals: array<u32, 4>;
+        for (var si: u32 = 0u; si < 4u; si++) {
+            scale_vals[si] = bitcast<u32>(vec2(
+                src0[scale_idx + 96u + 2u*si],
+                src0[scale_idx + 96u + 2u*si + 1u]
+            ));
+        }
+        
+        var ql_vals: array<u32, 32>;
+        for (var qi: u32 = 0u; qi < 32u; qi++) {
+            ql_vals[qi] = bitcast<u32>(vec2(
+                src0[scale_idx + 2u * qi],
+                src0[scale_idx + 2u * qi + 1u]
+            ));
+        }
+        
+        var qh_vals: array<u32, 16>;
+        for (var qi: u32 = 0u; qi < 16u; qi++) {
+            qh_vals[qi] = bitcast<u32>(vec2(
+                src0[scale_idx + 64u + 2u * qi],
+                src0[scale_idx + 64u + 2u * qi + 1u]
+            ));
+        }
+        
+        let half = k_in_block / 128u;
+        let pos_in_half = k_in_block % 128u;
+        let quarter = pos_in_half / 32u;
+        let l = pos_in_half % 32u;
+        
+        let ql_b_idx = half * 64u;
+        let qh_b_idx = half * 32u;
+        let sc_b_idx = half * 8u;
+        
+        let ql13_b = get_byte(ql_vals[(ql_b_idx + l) / 4u], (ql_b_idx + l) % 4u);
+        let ql24_b = get_byte(ql_vals[(ql_b_idx + l + 32u) / 4u], (ql_b_idx + l + 32u) % 4u);
+        let qh_b = get_byte(qh_vals[(qh_b_idx + l) / 4u], (qh_b_idx + l) % 4u);
+        
+        let q1 = f32((ql13_b & 0xFu) | ((qh_b & 3u) << 4u)) - 32.0;
+        let q2 = f32((ql24_b & 0xFu) | (((qh_b >> 2u) & 3u) << 4u)) - 32.0;
+        let q3 = f32((ql13_b >> 4u) | (((qh_b >> 4u) & 3u) << 4u)) - 32.0;
+        let q4 = f32((ql24_b >> 4u) | (((qh_b >> 6u) & 3u) << 4u)) - 32.0;
+        
+        let is = l / 16u;
+        
+        var q_val: f32;
+        if (quarter == 0u) {
+            let is1 = sc_b_idx + is;
+            let sc1 = get_byte_i32(scale_vals[is1 / 4u], is1 % 4u);
+            q_val = d * f32(sc1) * q1;
+        } else if (quarter == 1u) {
+            let is2 = sc_b_idx + is + 2u;
+            let sc2 = get_byte_i32(scale_vals[is2 / 4u], is2 % 4u);
+            q_val = d * f32(sc2) * q2;
+        } else if (quarter == 2u) {
+            let is3 = sc_b_idx + is + 4u;
+            let sc3 = get_byte_i32(scale_vals[is3 / 4u], is3 % 4u);
+            q_val = d * f32(sc3) * q3;
+        } else {
+            let is4 = sc_b_idx + is + 6u;
+            let sc4 = get_byte_i32(scale_vals[is4 / 4u], is4 % 4u);
+            q_val = d * f32(sc4) * q4;
+        }
+        
+        local_sum += q_val * shared_vector[i];
+    }
+    return local_sum;
+}
+#endif
+
 struct MulMatParams {
     offset_src0: u32,
     offset_src1: u32,
