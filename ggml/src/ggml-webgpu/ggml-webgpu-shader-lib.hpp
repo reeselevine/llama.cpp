@@ -4,6 +4,7 @@
 #include "ggml.h"
 #include "pre_wgsl.hpp"
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <vector>
