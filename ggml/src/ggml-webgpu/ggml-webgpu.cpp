@@ -369,7 +369,7 @@ struct webgpu_context_struct {
     std::unordered_map<ggml_webgpu_flash_attn_pipeline_key, webgpu_pipeline, ggml_webgpu_flash_attn_pipeline_key_hash>
         flash_attn_pipelines;
 
-    std::map<int, std::map<int, webgpu_pipeline>> cpy_pipelines;  // src_type, dst_type
+    std::map<int, std::map<int, webgpu_pipeline>> cpy_pipelines;                      // src_type, dst_type
 
     std::map<int, webgpu_pipeline>                               rms_norm_pipelines;  // inplace
     std::map<int, std::map<int, std::map<int, webgpu_pipeline>>> rope_pipelines;      // type, ff, inplace
@@ -891,9 +891,7 @@ static webgpu_command ggml_webgpu_cpy(webgpu_context & ctx, ggml_tensor * src, g
 
 static webgpu_command ggml_webgpu_pad(webgpu_context & ctx, ggml_tensor * src, ggml_tensor * dst) {
     ggml_webgpu_shader_lib_context shader_lib_ctx = {
-        .src0 = src,
-        .dst  = dst,
-        .max_wg_size = ctx->global_ctx->capabilities.limits.maxComputeInvocationsPerWorkgroup
+        .src0 = src, .dst = dst, .max_wg_size = ctx->global_ctx->capabilities.limits.maxComputeInvocationsPerWorkgroup
     };
 
     webgpu_pipeline pipeline = ctx->shader_lib->get_pad_pipeline(shader_lib_ctx);
@@ -957,7 +955,10 @@ static std::optional<webgpu_command> ggml_webgpu_set_rows(webgpu_context & ctx,
     }
 
     ggml_webgpu_shader_lib_context shader_lib_ctx = {
-        .src0 = src, .src1 = idx, .dst = dst, .max_wg_size = ctx->global_ctx->capabilities.limits.maxComputeInvocationsPerWorkgroup
+        .src0        = src,
+        .src1        = idx,
+        .dst         = dst,
+        .max_wg_size = ctx->global_ctx->capabilities.limits.maxComputeInvocationsPerWorkgroup
     };
 
     webgpu_pipeline pipeline = ctx->shader_lib->get_set_rows_pipeline(shader_lib_ctx);
@@ -1032,13 +1033,13 @@ static webgpu_command ggml_webgpu_get_rows(webgpu_context & ctx,
                                            ggml_tensor *    idx,
                                            ggml_tensor *    dst) {
     ggml_webgpu_shader_lib_context shader_lib_ctx = {
-        .src0       = src,
-        .src1       = nullptr,
-        .dst        = dst,
+        .src0        = src,
+        .src1        = nullptr,
+        .dst         = dst,
         .max_wg_size = WEBGPU_MAX_WG_SIZE,
     };
 
-    webgpu_pipeline pipeline   = ctx->shader_lib->get_get_rows_pipeline(shader_lib_ctx);
+    webgpu_pipeline pipeline  = ctx->shader_lib->get_get_rows_pipeline(shader_lib_ctx);
     auto *          decisions = static_cast<ggml_webgpu_generic_shader_decisions *>(pipeline.context.get());
 
     std::vector<uint32_t> params = { (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src) / ggml_type_size(src->type)),
@@ -1098,6 +1099,17 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
                 case GGML_TYPE_F32:
                 case GGML_TYPE_F16:
                 case GGML_TYPE_Q4_0:
+                case GGML_TYPE_Q4_1:
+                case GGML_TYPE_Q5_0:
+                case GGML_TYPE_Q5_1:
+                case GGML_TYPE_Q8_0:
+                case GGML_TYPE_Q8_1:
+                case GGML_TYPE_Q2_K:
+                case GGML_TYPE_Q3_K:
+                case GGML_TYPE_Q4_K:
+                case GGML_TYPE_Q5_K:
+                case GGML_TYPE_Q6_K:
+                    // For quantized types: only use fast path for non-vec (tiled) operations
                     use_fast = true;
                     break;
                 default:
@@ -1247,6 +1259,7 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
                 decisions->subgroup_n * decisions->subgroup_matrix_n * ctx->global_ctx->capabilities.sg_mat_n;
             wg_n = CEIL_DIV(dst->ne[1], wg_n_sg_tile);
         } else {
+            // Original logic for FP16/FP32 and 32-element block types
             uint32_t tile_m_s = decisions->tile_m * decisions->wg_size_m;
             uint32_t tile_n_s = decisions->tile_n * decisions->wg_size_n;
             wg_m              = CEIL_DIV(dst->ne[0], tile_m_s);
@@ -1402,7 +1415,7 @@ static webgpu_command ggml_webgpu_unary_op(webgpu_context & ctx, ggml_tensor * s
         .inplace     = inplace,
     };
 
-    webgpu_pipeline pipeline  = ctx->shader_lib->get_unary_pipeline(shader_lib_ctx);
+    webgpu_pipeline pipeline = ctx->shader_lib->get_unary_pipeline(shader_lib_ctx);
 
     auto * decisions = static_cast<ggml_webgpu_generic_shader_decisions *>(pipeline.context.get());
 
@@ -1483,7 +1496,7 @@ static webgpu_command ggml_webgpu_binary_op(webgpu_context & ctx,
         .overlap     = flags.overlap,
     };
 
-    webgpu_pipeline pipeline  = ctx->shader_lib->get_binary_pipeline(shader_lib_ctx);
+    webgpu_pipeline pipeline = ctx->shader_lib->get_binary_pipeline(shader_lib_ctx);
 
     auto * decisions = static_cast<ggml_webgpu_generic_shader_decisions *>(pipeline.context.get());
 
@@ -1860,19 +1873,18 @@ static webgpu_command ggml_webgpu_argmax(webgpu_context & ctx, ggml_tensor * src
 }
 
 static webgpu_command ggml_webgpu_argsort(webgpu_context & ctx, ggml_tensor * src, ggml_tensor * dst) {
-    bool          is_top_k = dst->op == GGML_OP_TOP_K;
+    bool is_top_k = dst->op == GGML_OP_TOP_K;
 
     ggml_webgpu_shader_lib_context shader_lib_ctx = {
-        .src0 = src,
-        .src1 = nullptr,
-        .dst  = dst,
+        .src0               = src,
+        .src1               = nullptr,
+        .dst                = dst,
         .max_wg_size        = ctx->global_ctx->capabilities.limits.maxComputeInvocationsPerWorkgroup,
         .wg_mem_limit_bytes = ctx->global_ctx->capabilities.limits.maxComputeWorkgroupStorageSize,
     };
 
     webgpu_pipeline argsort_pipeline = ctx->shader_lib->get_argsort_pipeline(shader_lib_ctx);
-    auto *          argsort_decisions =
-        static_cast<ggml_webgpu_generic_shader_decisions *>(argsort_pipeline.context.get());
+    auto * argsort_decisions = static_cast<ggml_webgpu_generic_shader_decisions *>(argsort_pipeline.context.get());
 
     webgpu_pipeline argsort_merge_pipeline = ctx->shader_lib->get_argsort_merge_pipeline(shader_lib_ctx);
 
@@ -2034,14 +2046,14 @@ static webgpu_command ggml_webgpu_cumsum(webgpu_context & ctx, ggml_tensor * src
     };
 
     ggml_webgpu_shader_lib_context shader_lib_ctx = {
-        .src0       = src,
-        .src1       = nullptr,
-        .dst        = dst,
+        .src0        = src,
+        .src1        = nullptr,
+        .dst         = dst,
         .max_wg_size = ctx->global_ctx->capabilities.limits.maxComputeInvocationsPerWorkgroup,
     };
 
     webgpu_pipeline pipeline = ctx->shader_lib->get_cumsum_pipeline(shader_lib_ctx);
-    uint32_t wg_x = ggml_nrows(dst);
+    uint32_t        wg_x     = ggml_nrows(dst);
     return ggml_backend_webgpu_build(ctx->global_ctx, ctx->param_buf_pool, pipeline, params, entries, wg_x);
 }
 
