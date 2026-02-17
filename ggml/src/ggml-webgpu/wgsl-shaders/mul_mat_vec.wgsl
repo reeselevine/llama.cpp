@@ -562,18 +562,23 @@ fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
 
 const BLOCK_SIZE = 256;
 const F16_PER_BLOCK = 105u;
+const LANES_PER_BLOCK = 16u;
 
-fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
+// Keep the prior per-weight version for fallback/debugging.
+fn mul_acc_q6_k_baseline(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32, sh_offset: u32, is_active: bool) -> f32 {
+    if (!is_active) {
+        return 0.0;
+    }
     var local_sum = 0.0;
     for (var i = tig; i < tile_size; i += THREADS_PER_OUTPUT) {
         let k_global = k_outer + i;
         let block_k = k_global / BLOCK_SIZE;
         let k_in_block = k_global % BLOCK_SIZE;
-        
+
         let scale_idx = (idx_base + block_k) * F16_PER_BLOCK;
-        
+
         let d = f32(src0[scale_idx + 104u]);
-        
+
         var scale_vals: array<u32, 4>;
         for (var si: u32 = 0u; si < 4u; si++) {
             scale_vals[si] = bitcast<u32>(vec2(
@@ -581,7 +586,7 @@ fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
                 src0[scale_idx + 96u + 2u*si + 1u]
             ));
         }
-        
+
         var ql_vals: array<u32, 32>;
         for (var qi: u32 = 0u; qi < 32u; qi++) {
             ql_vals[qi] = bitcast<u32>(vec2(
@@ -589,7 +594,7 @@ fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
                 src0[scale_idx + 2u * qi + 1u]
             ));
         }
-        
+
         var qh_vals: array<u32, 16>;
         for (var qi: u32 = 0u; qi < 16u; qi++) {
             qh_vals[qi] = bitcast<u32>(vec2(
@@ -597,27 +602,27 @@ fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
                 src0[scale_idx + 64u + 2u * qi + 1u]
             ));
         }
-        
+
         let half = k_in_block / 128u;
         let pos_in_half = k_in_block % 128u;
         let quarter = pos_in_half / 32u;
         let l = pos_in_half % 32u;
-        
+
         let ql_b_idx = half * 64u;
         let qh_b_idx = half * 32u;
         let sc_b_idx = half * 8u;
-        
+
         let ql13_b = get_byte(ql_vals[(ql_b_idx + l) / 4u], (ql_b_idx + l) % 4u);
         let ql24_b = get_byte(ql_vals[(ql_b_idx + l + 32u) / 4u], (ql_b_idx + l + 32u) % 4u);
         let qh_b = get_byte(qh_vals[(qh_b_idx + l) / 4u], (qh_b_idx + l) % 4u);
-        
+
         let q1 = f32((ql13_b & 0xFu) | ((qh_b & 3u) << 4u)) - 32.0;
         let q2 = f32((ql24_b & 0xFu) | (((qh_b >> 2u) & 3u) << 4u)) - 32.0;
         let q3 = f32((ql13_b >> 4u) | (((qh_b >> 4u) & 3u) << 4u)) - 32.0;
         let q4 = f32((ql24_b >> 4u) | (((qh_b >> 6u) & 3u) << 4u)) - 32.0;
-        
+
         let is = l / 16u;
-        
+
         var q_val: f32;
         if (quarter == 0u) {
             let is1 = sc_b_idx + is;
@@ -636,9 +641,111 @@ fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
             let sc4 = get_byte_i32(scale_vals[is4 / 4u], is4 % 4u);
             q_val = d * f32(sc4) * q4;
         }
-        
-        local_sum += q_val * shared_vector[i];
+
+        local_sum += q_val * shared_vector[sh_offset + i];
     }
+    return local_sum;
+}
+
+// Cooperative 16-lane block path modeled after Metal/Vulkan.
+fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32, is_active: bool, group_id: u32) -> f32 {
+    if (THREADS_PER_OUTPUT < LANES_PER_BLOCK) {
+        return mul_acc_q6_k_baseline(tig, tile_size, idx_base, k_outer, 0u, is_active);
+    }
+
+    var local_sum = 0.0;
+    let lane = tig;
+
+    var block_start: u32 = 0u;
+    loop {
+        if (block_start >= tile_size) {
+            break;
+        }
+        let remaining = tile_size - block_start;
+        if (remaining < BLOCK_SIZE) {
+            // Fallback for tail blocks that aren’t full.
+            local_sum += mul_acc_q6_k_baseline(tig, remaining, idx_base, k_outer + block_start, block_start, is_active);
+            break;
+        }
+
+        let k_base = k_outer + block_start;
+        let block_idx = k_base / BLOCK_SIZE;
+        let scale_idx = (idx_base + block_idx) * F16_PER_BLOCK;
+
+        // Lane 0 loads scales and d for the block; broadcast via shared memory.
+        if (lane == 0u && is_active) {
+            for (var si: u32 = 0u; si < 4u; si++) {
+                q6_scale_words[group_id][si] = bitcast<u32>(vec2(
+                    src0[scale_idx + 96u + 2u*si],
+                    src0[scale_idx + 96u + 2u*si + 1u]
+                ));
+            }
+            q6_d[group_id] = f32(src0[scale_idx + 104u]);
+        }
+
+        workgroupBarrier();
+
+        if (lane < LANES_PER_BLOCK && is_active) {
+            // Distribute the 256 weights across 16 lanes: each lane handles every 16th weight.
+            for (var w: u32 = lane; w < BLOCK_SIZE; w += LANES_PER_BLOCK) {
+                let half = w / 128u;               // 0 or 1
+                let pos_in_half = w % 128u;        // 0..127
+                let quarter = pos_in_half / 32u;   // 0..3
+                let l = pos_in_half % 32u;         // 0..31
+
+                let ql_b_idx = half * 64u;
+                let qh_b_idx = half * 32u;
+                let sc_b_idx = half * 8u;
+
+                let ql_word = bitcast<u32>(vec2(
+                    src0[scale_idx + 2u * ((ql_b_idx + l) / 4u)],
+                    src0[scale_idx + 2u * ((ql_b_idx + l) / 4u) + 1u]
+                ));
+                let ql_word2 = bitcast<u32>(vec2(
+                    src0[scale_idx + 2u * ((ql_b_idx + l + 32u) / 4u)],
+                    src0[scale_idx + 2u * ((ql_b_idx + l + 32u) / 4u) + 1u]
+                ));
+                let qh_word = bitcast<u32>(vec2(
+                    src0[scale_idx + 64u + 2u * ((qh_b_idx + l) / 4u)],
+                    src0[scale_idx + 64u + 2u * ((qh_b_idx + l) / 4u) + 1u]
+                ));
+
+                let ql13_b = get_byte(ql_word, (ql_b_idx + l) % 4u);
+                let ql24_b = get_byte(ql_word2, (ql_b_idx + l + 32u) % 4u);
+                let qh_b = get_byte(qh_word, (qh_b_idx + l) % 4u);
+
+                let q1 = f32((ql13_b & 0xFu) | ((qh_b & 3u) << 4u)) - 32.0;
+                let q2 = f32((ql24_b & 0xFu) | (((qh_b >> 2u) & 3u) << 4u)) - 32.0;
+                let q3 = f32((ql13_b >> 4u) | (((qh_b >> 4u) & 3u) << 4u)) - 32.0;
+                let q4 = f32((ql24_b >> 4u) | (((qh_b >> 6u) & 3u) << 4u)) - 32.0;
+
+                // Scale indices: two bytes per 16 elements, offsets 0/2/4/6.
+                let is = l / 16u;
+            let sc0 = get_byte_i32(q6_scale_words[group_id][(sc_b_idx + is) / 4u], (sc_b_idx + is) % 4u);
+            let sc1 = get_byte_i32(q6_scale_words[group_id][(sc_b_idx + is + 2u) / 4u], (sc_b_idx + is + 2u) % 4u);
+            let sc2 = get_byte_i32(q6_scale_words[group_id][(sc_b_idx + is + 4u) / 4u], (sc_b_idx + is + 4u) % 4u);
+            let sc3 = get_byte_i32(q6_scale_words[group_id][(sc_b_idx + is + 6u) / 4u], (sc_b_idx + is + 6u) % 4u);
+
+                let y_idx = block_start + w;
+                var q_val: f32;
+                if (quarter == 0u) {
+                    q_val = q1 * f32(sc0);
+                } else if (quarter == 1u) {
+                    q_val = q2 * f32(sc1);
+                } else if (quarter == 2u) {
+                    q_val = q3 * f32(sc2);
+                } else {
+                    q_val = q4 * f32(sc3);
+                }
+
+                local_sum += q6_d[group_id] * q_val * f32(shared_vector[y_idx]);
+            }
+        }
+
+        workgroupBarrier();
+        block_start += BLOCK_SIZE;
+    }
+
     return local_sum;
 }
 #endif
@@ -672,6 +779,10 @@ struct MulMatParams {
 const THREADS_PER_OUTPUT = WG_SIZE / OUTPUTS_PER_WG;
 
 // Shared memory for collaborative loading and reduction
+#ifdef MUL_ACC_Q6_K
+var<workgroup> q6_scale_words: array<array<u32, 4>, OUTPUTS_PER_WG>;
+var<workgroup> q6_d: array<f32, OUTPUTS_PER_WG>;
+#endif
 var<workgroup> shared_vector: array<SRC1_TYPE, TILE_K/VEC_SIZE>;  // Cache vector tile
 var<workgroup> partial_sums: array<f32, WG_SIZE>;   // For reduction
 
@@ -724,9 +835,8 @@ fn main(
 
         workgroupBarrier();
 
-        if (output_row < params.m) {
-            local_sum += mul_acc(thread_in_group, tile_size, src0_idx_base, k_tile);
-        }
+        let is_active = output_row < params.m;
+        local_sum += mul_acc(thread_in_group, tile_size, src0_idx_base, k_tile, is_active, thread_group);
 
         workgroupBarrier();
     }

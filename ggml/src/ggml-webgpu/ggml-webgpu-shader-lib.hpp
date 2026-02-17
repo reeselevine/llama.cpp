@@ -728,29 +728,18 @@ class ggml_webgpu_shader_lib {
         std::vector<std::string> defines;
         std::string              variant = "mul_mat_vec";
 
-        // src1 type (vector)
-        switch (context.src1->type) {
-            case GGML_TYPE_F32:
-                defines.push_back("SRC1_INNER_TYPE=f32");
-                variant += "_f32";
-                break;
-            case GGML_TYPE_F16:
-                defines.push_back("SRC1_INNER_TYPE=f16");
-                variant += "_f16";
-                break;
-            default:
-                GGML_ABORT("Unsupported src1 type for mul_mat_vec shader");
-        }
-
         // src0 type (matrix row)
+        bool src0_quantized = false;
         switch (context.src0->type) {
             case GGML_TYPE_F32:
                 defines.push_back("SRC0_INNER_TYPE=f32");
                 defines.push_back("MUL_ACC_FLOAT");
+                variant += "_src0_f32";
                 break;
             case GGML_TYPE_F16:
                 defines.push_back("SRC0_INNER_TYPE=f16");
                 defines.push_back("MUL_ACC_FLOAT");
+                variant += "_src0_f16";
                 break;
             default:
                 {
@@ -762,6 +751,8 @@ class ggml_webgpu_shader_lib {
 
                     defines.push_back("BYTE_HELPERS");
                     defines.push_back("MUL_ACC_" + type_upper);
+                    variant += "_src0_" + type_upper;
+                    src0_quantized = true;
 
                     // For fast path we always dequantize from f16 inside the shader
                     defines.push_back("SRC0_INNER_TYPE=f16");
@@ -769,15 +760,38 @@ class ggml_webgpu_shader_lib {
                 }
         }
 
+        // src1 type (vector)
+        switch (context.src1->type) {
+            case GGML_TYPE_F32:
+                defines.push_back("SRC1_INNER_TYPE=f32");
+                variant += "_src1_f32";
+                break;
+            case GGML_TYPE_F16:
+                defines.push_back("SRC1_INNER_TYPE=f16");
+                variant += "_src1_f16";
+                break;
+            default:
+                GGML_ABORT("Unsupported src1 type for mul_mat_vec shader");
+        }
+
+
         // VEC/SCALAR controls
         defines.push_back(key.vectorized ? "VEC" : "SCALAR");
 
         uint32_t wg_size        = WEBGPU_MUL_MAT_VEC_WG_SIZE;
         uint32_t tile_k         = WEBGPU_MUL_MAT_VEC_TILE_K;
         uint32_t outputs_per_wg = WEBGPU_MUL_MAT_VEC_OUTPUTS_PER_WG;
+
+        // Quantized mat-vec (e.g., Q6_K) needs >=16 threads per output for cooperative dequant.
+        // Use 16 threads/output and a 256-k tile to align with the 256-weight block.
+        if (src0_quantized) {
+            outputs_per_wg = std::max<uint32_t>(1, wg_size / 16);
+            tile_k         = std::max<uint32_t>(tile_k, 256);
+        }
         defines.push_back(std::string("WG_SIZE=") + std::to_string(wg_size));
         defines.push_back(std::string("TILE_K=") + std::to_string(tile_k));
         defines.push_back(std::string("OUTPUTS_PER_WG=") + std::to_string(outputs_per_wg));
+        variant += "_wg" + std::to_string(wg_size) + "_opwg" + std::to_string(outputs_per_wg) + "_tk" + std::to_string(tile_k);
 
         auto processed            = preprocessor.preprocess(wgsl_mul_mat_vec, defines);
         auto decisions            = std::make_shared<ggml_webgpu_mul_mat_vec_shader_decisions>();
