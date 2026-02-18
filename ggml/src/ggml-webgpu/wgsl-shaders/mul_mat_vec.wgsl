@@ -560,32 +560,6 @@ fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
         
         let scale_idx = (idx_base + block_k) * F16_PER_BLOCK;
         
-        let d = f32(src0[scale_idx + 104u]);
-        
-        var scale_vals: array<u32, 4>;
-        for (var si: u32 = 0u; si < 4u; si++) {
-            scale_vals[si] = bitcast<u32>(vec2(
-                src0[scale_idx + 96u + 2u*si],
-                src0[scale_idx + 96u + 2u*si + 1u]
-            ));
-        }
-        
-        var ql_vals: array<u32, 32>;
-        for (var qi: u32 = 0u; qi < 32u; qi++) {
-            ql_vals[qi] = bitcast<u32>(vec2(
-                src0[scale_idx + 2u * qi],
-                src0[scale_idx + 2u * qi + 1u]
-            ));
-        }
-        
-        var qh_vals: array<u32, 16>;
-        for (var qi: u32 = 0u; qi < 16u; qi++) {
-            qh_vals[qi] = bitcast<u32>(vec2(
-                src0[scale_idx + 64u + 2u * qi],
-                src0[scale_idx + 64u + 2u * qi + 1u]
-            ));
-        }
-        
         let half = k_in_block / 128u;
         let pos_in_half = k_in_block % 128u;
         let quarter = pos_in_half / 32u;
@@ -595,37 +569,65 @@ fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
         let qh_b_idx = half * 32u;
         let sc_b_idx = half * 8u;
         
-        let ql13_b = get_byte(ql_vals[(ql_b_idx + l) / 4u], (ql_b_idx + l) % 4u);
-        let ql24_b = get_byte(ql_vals[(ql_b_idx + l + 32u) / 4u], (ql_b_idx + l + 32u) % 4u);
-        let qh_b = get_byte(qh_vals[(qh_b_idx + l) / 4u], (qh_b_idx + l) % 4u);
-        
+        // Load only ql13 word needed
+        let ql13_flat = ql_b_idx + l;
+        let ql13_word = ql13_flat / 4u;
+        let ql13 = bitcast<u32>(vec2(
+            src0[scale_idx + 2u * ql13_word],
+            src0[scale_idx + 2u * ql13_word + 1u]
+        ));
+        let ql13_b = get_byte(ql13, ql13_flat % 4u);
+
+        // Load only ql24 word needed
+        let ql24_flat = ql_b_idx + l + 32u;
+        let ql24_word = ql24_flat / 4u;
+        let ql24 = bitcast<u32>(vec2(
+            src0[scale_idx + 2u * ql24_word],
+            src0[scale_idx + 2u * ql24_word + 1u]
+        ));
+        let ql24_b = get_byte(ql24, ql24_flat % 4u);
+
+        // Load only qh word needed
+        let qh_flat = qh_b_idx + l;
+        let qh_word = qh_flat / 4u;
+        let qh = bitcast<u32>(vec2(
+            src0[scale_idx + 64u + 2u * qh_word],
+            src0[scale_idx + 64u + 2u * qh_word + 1u]
+        ));
+        let qh_b = get_byte(qh, qh_flat % 4u);
+
+        // Dequantize
         let q1 = f32((ql13_b & 0xFu) | ((qh_b & 3u) << 4u)) - 32.0;
         let q2 = f32((ql24_b & 0xFu) | (((qh_b >> 2u) & 3u) << 4u)) - 32.0;
         let q3 = f32((ql13_b >> 4u) | (((qh_b >> 4u) & 3u) << 4u)) - 32.0;
         let q4 = f32((ql24_b >> 4u) | (((qh_b >> 6u) & 3u) << 4u)) - 32.0;
-        
+
+        // Load only the scale word needed
         let is = l / 16u;
-        
+        let sc_idx = sc_b_idx + is + quarter * 2u;
+        let sc_word = sc_idx / 4u;
+        let sc = bitcast<u32>(vec2(
+            src0[scale_idx + 96u + 2u * sc_word],
+            src0[scale_idx + 96u + 2u * sc_word + 1u]
+        ));
+        let sc_val = get_byte_i32(sc, sc_idx % 4u);
+
+        // Load d (scale factor)
+        let d = f32(src0[scale_idx + 104u]);
+
+        // Select q value based on quarter
         var q_val: f32;
         if (quarter == 0u) {
-            let is1 = sc_b_idx + is;
-            let sc1 = get_byte_i32(scale_vals[is1 / 4u], is1 % 4u);
-            q_val = d * f32(sc1) * q1;
+            q_val = q1;
         } else if (quarter == 1u) {
-            let is2 = sc_b_idx + is + 2u;
-            let sc2 = get_byte_i32(scale_vals[is2 / 4u], is2 % 4u);
-            q_val = d * f32(sc2) * q2;
+            q_val = q2;
         } else if (quarter == 2u) {
-            let is3 = sc_b_idx + is + 4u;
-            let sc3 = get_byte_i32(scale_vals[is3 / 4u], is3 % 4u);
-            q_val = d * f32(sc3) * q3;
+            q_val = q3;
         } else {
-            let is4 = sc_b_idx + is + 6u;
-            let sc4 = get_byte_i32(scale_vals[is4 / 4u], is4 % 4u);
-            q_val = d * f32(sc4) * q4;
+            q_val = q4;
         }
-        
-        local_sum += q_val * shared_vector[i];
+
+        local_sum += d * f32(sc_val) * q_val * shared_vector[i];
     }
     return local_sum;
 }
