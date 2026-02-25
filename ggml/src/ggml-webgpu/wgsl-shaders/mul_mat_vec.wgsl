@@ -545,90 +545,92 @@ fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
     return local_sum;
 }
 #endif
-
 #ifdef MUL_ACC_Q6_K
 
-const BLOCK_SIZE = 256;
+const BLOCK_SIZE = 256u;
 const F16_PER_BLOCK = 105u;
 
-fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
+fn load_u32_at(bbase: u32, byte_offset: u32) -> u32 {
+    let aligned = byte_offset & ~3u;
+    let idx = bbase + aligned / 2u;
+    return bitcast<u32>(vec2(src0[idx], src0[idx + 1u]));
+}
+
+fn byte_of(v: u32, b: u32) -> u32 {
+    return (v >> (b * 8u)) & 0xFFu;
+}
+
+fn sbyte_of(v: u32, b: u32) -> i32 {
+    let raw = i32((v >> (b * 8u)) & 0xFFu);
+    return select(raw, raw - 256, raw >= 128);
+}
+
+fn mul_acc(tig: u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
+    let tid = tig / 2u;
+    let ix  = tig % 2u;
+    let ip  = tid / 8u;
+    let il  = tid % 8u;
+    let l0  = 4u * il;
+    let is  = 8u * ip + l0 / 16u;
+
+    let y_offset   = 128u * ip + l0;
+    let q_offset_l =  64u * ip + l0;
+    let q_offset_h =  32u * ip + l0;
+
+    let nb = tile_size / BLOCK_SIZE;
+    let k_block_start = k_outer / BLOCK_SIZE;
+
+    // Aligned scale byte position (is can be odd)
+    let sc_base_byte = 192u + (is & ~3u);
+    let sc_byte_pos  = is & 3u;
+
     var local_sum = 0.0;
-    for (var i = tig; i < tile_size; i += THREADS_PER_OUTPUT) {
-        let k_global = k_outer + i;
-        let block_k = k_global / BLOCK_SIZE;
-        let k_in_block = k_global % BLOCK_SIZE;
-        
-        let scale_idx = (idx_base + block_k) * F16_PER_BLOCK;
-        
-        let half = k_in_block / 128u;
-        let pos_in_half = k_in_block % 128u;
-        let quarter = pos_in_half / 32u;
-        let l = pos_in_half % 32u;
-        
-        let ql_b_idx = half * 64u;
-        let qh_b_idx = half * 32u;
-        let sc_b_idx = half * 8u;
-        
-        // Load only ql13 word needed
-        let ql13_flat = ql_b_idx + l;
-        let ql13_word = ql13_flat / 4u;
-        let ql13 = bitcast<u32>(vec2(
-            src0[scale_idx + 2u * ql13_word],
-            src0[scale_idx + 2u * ql13_word + 1u]
-        ));
-        let ql13_b = get_byte(ql13, ql13_flat % 4u);
 
-        // Load only ql24 word needed
-        let ql24_flat = ql_b_idx + l + 32u;
-        let ql24_word = ql24_flat / 4u;
-        let ql24 = bitcast<u32>(vec2(
-            src0[scale_idx + 2u * ql24_word],
-            src0[scale_idx + 2u * ql24_word + 1u]
-        ));
-        let ql24_b = get_byte(ql24, ql24_flat % 4u);
+    for (var i = ix; i < nb; i += 2u) {
+        let bbase = (idx_base + k_block_start + i) * F16_PER_BLOCK;
 
-        // Load only qh word needed
-        let qh_flat = qh_b_idx + l;
-        let qh_word = qh_flat / 4u;
-        let qh = bitcast<u32>(vec2(
-            src0[scale_idx + 64u + 2u * qh_word],
-            src0[scale_idx + 64u + 2u * qh_word + 1u]
-        ));
-        let qh_b = get_byte(qh, qh_flat % 4u);
+        let d_raw = load_u32_at(bbase, 208u);
+        let d = f32(bitcast<vec2<f16>>(d_raw)[0]);
 
-        // Dequantize
-        let q1 = f32((ql13_b & 0xFu) | ((qh_b & 3u) << 4u)) - 32.0;
-        let q2 = f32((ql24_b & 0xFu) | (((qh_b >> 2u) & 3u) << 4u)) - 32.0;
-        let q3 = f32((ql13_b >> 4u) | (((qh_b >> 4u) & 3u) << 4u)) - 32.0;
-        let q4 = f32((ql24_b >> 4u) | (((qh_b >> 6u) & 3u) << 4u)) - 32.0;
+        let ql1_u32  = load_u32_at(bbase, q_offset_l);
+        let ql2_u32  = load_u32_at(bbase, q_offset_l + 32u);
+        let qh_u32   = load_u32_at(bbase, 128u + q_offset_h);
+        let sc_u32_0 = load_u32_at(bbase, sc_base_byte);
+        let sc_u32_1 = load_u32_at(bbase, sc_base_byte + 4u);
 
-        // Load only the scale word needed
-        let is = l / 16u;
-        let sc_idx = sc_b_idx + is + quarter * 2u;
-        let sc_word = sc_idx / 4u;
-        let sc = bitcast<u32>(vec2(
-            src0[scale_idx + 96u + 2u * sc_word],
-            src0[scale_idx + 96u + 2u * sc_word + 1u]
-        ));
-        let sc_val = get_byte_i32(sc, sc_idx % 4u);
+        let sc0 = sbyte_of(sc_u32_0, sc_byte_pos);
+        let sc2 = sbyte_of(sc_u32_0, sc_byte_pos + 2u);
+        let sc4 = sbyte_of(sc_u32_1, sc_byte_pos);
+        let sc6 = sbyte_of(sc_u32_1, sc_byte_pos + 2u);
 
-        // Load d (scale factor)
-        let d = f32(src0[scale_idx + 104u]);
+        var sums = vec4<f32>(0.0, 0.0, 0.0, 0.0);
 
-        // Select q value based on quarter
-        var q_val: f32;
-        if (quarter == 0u) {
-            q_val = q1;
-        } else if (quarter == 1u) {
-            q_val = q2;
-        } else if (quarter == 2u) {
-            q_val = q3;
-        } else {
-            q_val = q4;
+        for (var l = 0u; l < 4u; l++) {
+            let y_base = i * BLOCK_SIZE + y_offset + l;
+            let yl0 = f32(shared_vector[y_base]);
+            let yl1 = f32(shared_vector[y_base + 32u]);
+            let yl2 = f32(shared_vector[y_base + 64u]);
+            let yl3 = f32(shared_vector[y_base + 96u]);
+
+            let q1b = byte_of(ql1_u32, l);
+            let q2b = byte_of(ql2_u32, l);
+            let qhb = byte_of(qh_u32,  l);
+
+            let dq0 = f32(i32((q1b & 0x0Fu) | ((qhb & 0x03u) << 4u)) - 32);
+            let dq1 = f32(i32((q2b & 0x0Fu) | ((qhb & 0x0Cu) << 2u)) - 32);
+            let dq2 = f32(i32((q1b >>   4u) | ((qhb & 0x30u)       )) - 32);
+            let dq3 = f32(i32((q2b >>   4u) | ((qhb & 0xC0u) >> 2u)) - 32);
+
+            sums[0] += yl0 * dq0;
+            sums[1] += yl1 * dq1;
+            sums[2] += yl2 * dq2;
+            sums[3] += yl3 * dq3;
         }
 
-        local_sum += d * f32(sc_val) * q_val * shared_vector[i];
+        local_sum += d * (sums[0] * f32(sc0) + sums[1] * f32(sc2) +
+                          sums[2] * f32(sc4) + sums[3] * f32(sc6));
     }
+
     return local_sum;
 }
 #endif
