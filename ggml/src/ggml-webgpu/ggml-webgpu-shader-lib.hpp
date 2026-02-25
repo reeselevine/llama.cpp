@@ -1062,11 +1062,26 @@ inline ggml_webgpu_processed_shader ggml_webgpu_preprocess_mul_mat_shader(
     auto decisions                 = std::make_shared<ggml_webgpu_mul_mat_shader_decisions>();
     decisions->tile_m              = WEBGPU_MUL_MAT_TILE_M;
     decisions->tile_n              = WEBGPU_MUL_MAT_TILE_N;
-    decisions->tile_k              = context.key.is_vec ? WEBGPU_MUL_MAT_VEC_TILE_K : WEBGPU_MUL_MAT_TILE_K;
+    // Special-case tuning:
+    // - Q6_K: cooperative dequant, larger K tile
+    // - Q4_0: keep master-era launch shape (256 tile_k, 64 outputs_per_wg)
+    if (context.key.is_vec && context.key.src0_type == GGML_TYPE_Q6_K) {
+        decisions->tile_k = std::max<uint32_t>(WEBGPU_MUL_MAT_VEC_TILE_K, 256);
+    } else if (context.key.is_vec && context.key.src0_type == GGML_TYPE_Q4_0) {
+        decisions->tile_k = 256;
+    } else {
+        decisions->tile_k = context.key.is_vec ? WEBGPU_MUL_MAT_VEC_TILE_K : WEBGPU_MUL_MAT_TILE_K;
+    }
     decisions->wg_size_m           = WEBGPU_MUL_MAT_WG_SIZE_M;
     decisions->wg_size_n           = WEBGPU_MUL_MAT_WG_SIZE_N;
     decisions->wg_size             = WEBGPU_MUL_MAT_VEC_WG_SIZE;
-    decisions->outputs_per_wg      = WEBGPU_MUL_MAT_VEC_OUTPUTS_PER_WG;
+    if (context.key.is_vec && context.key.src0_type == GGML_TYPE_Q6_K) {
+        decisions->outputs_per_wg = std::max<uint32_t>(1, decisions->wg_size / 16);
+    } else if (context.key.is_vec && context.key.src0_type == GGML_TYPE_Q4_0) {
+        decisions->outputs_per_wg = 64;
+    } else {
+        decisions->outputs_per_wg = WEBGPU_MUL_MAT_VEC_OUTPUTS_PER_WG;
+    }
     decisions->subgroup_m          = WEBGPU_MUL_MAT_SUBGROUP_M;
     decisions->subgroup_n          = WEBGPU_MUL_MAT_SUBGROUP_N;
     decisions->subgroup_matrix_m   = WEBGPU_MUL_MAT_SUBGROUP_MATRIX_M;
