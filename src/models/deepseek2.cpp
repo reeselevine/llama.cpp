@@ -45,7 +45,8 @@ llm_build_deepseek2::llm_build_deepseek2(const llama_model & model, const llm_gr
 
     ggml_tensor * inp_out_ids = build_inp_out_ids();
 
-    for (int il = 0; il < n_layer; ++il) {
+    int effective_n_layers = hparams.n_layer - hparams.nextn_predict_layers;
+    for (int il = 0; il < effective_n_layers; ++il) {
         ggml_tensor * inpSA = inpL;
 
         // norm
@@ -188,7 +189,7 @@ llm_build_deepseek2::llm_build_deepseek2(const llama_model & model, const llm_gr
                             Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
             }
         }
-        if (il == n_layer - 1 && inp_out_ids) {
+        if (il == effective_n_layers - 1 && inp_out_ids) {
             cur   = ggml_get_rows(ctx0, cur, inp_out_ids);
             inpSA = ggml_get_rows(ctx0, inpSA, inp_out_ids);
         }
@@ -217,7 +218,9 @@ llm_build_deepseek2::llm_build_deepseek2(const llama_model & model, const llm_gr
                 LLM_FFN_SILU, hparams.expert_weights_norm,
                 hparams.expert_weights_scale, hparams.expert_weights_scale,
                 (llama_expert_gating_func_type) hparams.expert_gating_func,
-                il);
+                il,
+                nullptr,
+                model.layers[il].ffn_gate_up_exps);
             cb(moe_out, "ffn_moe_out", il);
 
             // FFN shared expert
