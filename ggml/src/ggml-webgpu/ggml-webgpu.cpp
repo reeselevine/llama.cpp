@@ -1359,14 +1359,13 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
                 case GGML_TYPE_Q8_0:
                 case GGML_TYPE_Q8_1:
                 case GGML_TYPE_Q6_K:
-                    use_fast = true;
-                    break;
                 case GGML_TYPE_Q2_K:
                 case GGML_TYPE_Q3_K:
                 case GGML_TYPE_Q4_K:
                 case GGML_TYPE_Q5_K:
                     // we don't have fast mat-vec for these types, but we do have (semi) fast mat-mat
-                    use_fast = !is_vec;
+                    // use_fast = !is_vec;
+                    use_fast = true;
                     break;
                 default:
                     break;
@@ -1475,6 +1474,11 @@ static webgpu_command ggml_webgpu_mul_mat(webgpu_context & ctx,
         uint32_t total_wg  = CEIL_DIV(dst->ne[0] * dst->ne[1] * dst->ne[2] * dst->ne[3], wg_size);
         compute_2d_workgroups(total_wg, max_wg_per_dim, wg_x, wg_y);
     }
+
+    // printf("DEBUG Q2K: stride_01=%u, offset_src0=%u, nb_blocks=%d\n",
+    //        (uint32_t) (src0->nb[1] / ggml_type_size(src0->type)),
+    //        (uint32_t) (ggml_webgpu_tensor_misalignment(ctx, src0) / ggml_type_size(src0->type)),
+    //        (int) (src0->ne[0] / 256));
 
     return ggml_backend_webgpu_build(ctx->global_ctx, ctx->param_buf_pool, pipeline, params, entries, wg_x, wg_y);
 }

@@ -2,6 +2,24 @@ enable f16;
 
 #include "common_decls.tmpl"
 
+#ifdef BYTE_HELPERS
+// include these helper functions for quantized types only
+fn load_u32_at(bbase: u32, byte_offset: u32) -> u32 {
+    let aligned = byte_offset & ~3u;
+    let idx = bbase + aligned / 2u;
+    return bitcast<u32>(vec2(src0[idx], src0[idx + 1u]));
+}
+
+fn byte_of(v: u32, b: u32) -> u32 {
+    return (v >> (b * 8u)) & 0xFFu;
+}
+
+fn sbyte_of(v: u32, b: u32) -> i32 {
+    let raw = i32((v >> (b * 8u)) & 0xFFu);
+    return select(raw, raw - 256, raw >= 128);
+}
+#endif
+
 #ifdef VEC
 
 #define VEC_SIZE 4
@@ -281,25 +299,682 @@ fn mul_acc(tig:u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
 }
 #endif
 
+#ifdef MUL_ACC_Q2_K
+
+const Q2K_BLOCK_SIZE    = 256u;
+const Q2K_F16_PER_BLOCK = 42u;
+
+fn mul_acc(tig: u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
+    let ix = tig / 8u;
+    let it = tig % 8u;
+    let iq = it / 4u;
+    let ir = it % 4u;
+    let is = (8u * ir) / 16u;
+
+    let nb            = tile_size / Q2K_BLOCK_SIZE;
+    let k_block_start = k_outer / Q2K_BLOCK_SIZE;
+    let y4_offset     = 128u * iq + 8u * ir;
+
+    let sc0_byte = 8u * iq + is;
+    let sc2_byte = 8u * iq + is + 2u;
+    let sc4_byte = 8u * iq + is + 4u;
+    let sc6_byte = 8u * iq + is + 6u;
+    let qs_byte  = 16u + (16u * iq + 4u * ir) * 2u;
+
+    var sumf = 0.0;
+
+    for (var ib = ix; ib < nb; ib += 4u) {
+        let bbase = (idx_base + k_block_start + ib) * Q2K_F16_PER_BLOCK;
+
+        let dall = f32(src0[bbase + 40u]);
+        let dmin = f32(src0[bbase + 41u]) * (1.0 / 16.0);
+
+        let sc0 = byte_of(load_u32_at(bbase, sc0_byte), sc0_byte & 3u);
+        let sc2 = byte_of(load_u32_at(bbase, sc2_byte), sc2_byte & 3u);
+        let sc4 = byte_of(load_u32_at(bbase, sc4_byte), sc4_byte & 3u);
+        let sc6 = byte_of(load_u32_at(bbase, sc6_byte), sc6_byte & 3u);
+
+        let qs_u32_0 = load_u32_at(bbase, qs_byte);
+        let qs_u32_1 = load_u32_at(bbase, qs_byte + 4u);
+        let qs0 = qs_u32_0 & 0xFFFFu;
+        let qs1 = qs_u32_0 >> 16u;
+        let qs2 = qs_u32_1 & 0xFFFFu;
+        let qs3 = qs_u32_1 >> 16u;
+
+        let y_base = ib * Q2K_BLOCK_SIZE + y4_offset;
+
+        // Read y values directly — avoids 32-element register array
+        // sumy accumulated inline
+        var sumy = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        var acc1 = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        var acc2 = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+
+        // merged the yl preload loop and the accumulation into a single unrolled structure
+        // keeps the y values in registers only as long as needed rather than holding all 32 simultaneously = less register pressure = better perf
+
+        // Unrolled over j=0..7, reading y values directly
+        // i=0: j=0,1
+        {
+            let y00 = f32(shared_vector[y_base      ]); sumy[0] += y00;
+            let y01 = f32(shared_vector[y_base +  1u]); sumy[0] += y01;
+            let y10 = f32(shared_vector[y_base + 32u]); sumy[1] += y10;
+            let y11 = f32(shared_vector[y_base + 33u]); sumy[1] += y11;
+            let y20 = f32(shared_vector[y_base + 64u]); sumy[2] += y20;
+            let y21 = f32(shared_vector[y_base + 65u]); sumy[2] += y21;
+            let y30 = f32(shared_vector[y_base + 96u]); sumy[3] += y30;
+            let y31 = f32(shared_vector[y_base + 97u]); sumy[3] += y31;
+            acc1[0] += y00 * f32(qs0 & 0x0003u);
+            acc2[0] += y01 * f32(qs0 & 0x0300u);
+            acc1[1] += y10 * f32(qs0 & 0x000Cu);
+            acc2[1] += y11 * f32(qs0 & 0x0C00u);
+            acc1[2] += y20 * f32(qs0 & 0x0030u);
+            acc2[2] += y21 * f32(qs0 & 0x3000u);
+            acc1[3] += y30 * f32(qs0 & 0x00C0u);
+            acc2[3] += y31 * f32(qs0 & 0xC000u);
+        }
+        // i=2: j=2,3
+        {
+            let y00 = f32(shared_vector[y_base +  2u]); sumy[0] += y00;
+            let y01 = f32(shared_vector[y_base +  3u]); sumy[0] += y01;
+            let y10 = f32(shared_vector[y_base + 34u]); sumy[1] += y10;
+            let y11 = f32(shared_vector[y_base + 35u]); sumy[1] += y11;
+            let y20 = f32(shared_vector[y_base + 66u]); sumy[2] += y20;
+            let y21 = f32(shared_vector[y_base + 67u]); sumy[2] += y21;
+            let y30 = f32(shared_vector[y_base + 98u]); sumy[3] += y30;
+            let y31 = f32(shared_vector[y_base + 99u]); sumy[3] += y31;
+            acc1[0] += y00 * f32(qs1 & 0x0003u);
+            acc2[0] += y01 * f32(qs1 & 0x0300u);
+            acc1[1] += y10 * f32(qs1 & 0x000Cu);
+            acc2[1] += y11 * f32(qs1 & 0x0C00u);
+            acc1[2] += y20 * f32(qs1 & 0x0030u);
+            acc2[2] += y21 * f32(qs1 & 0x3000u);
+            acc1[3] += y30 * f32(qs1 & 0x00C0u);
+            acc2[3] += y31 * f32(qs1 & 0xC000u);
+        }
+        // i=4: j=4,5
+        {
+            let y00 = f32(shared_vector[y_base +  4u]); sumy[0] += y00;
+            let y01 = f32(shared_vector[y_base +  5u]); sumy[0] += y01;
+            let y10 = f32(shared_vector[y_base + 36u]); sumy[1] += y10;
+            let y11 = f32(shared_vector[y_base + 37u]); sumy[1] += y11;
+            let y20 = f32(shared_vector[y_base + 68u]); sumy[2] += y20;
+            let y21 = f32(shared_vector[y_base + 69u]); sumy[2] += y21;
+            let y30 = f32(shared_vector[y_base + 100u]); sumy[3] += y30;
+            let y31 = f32(shared_vector[y_base + 101u]); sumy[3] += y31;
+            acc1[0] += y00 * f32(qs2 & 0x0003u);
+            acc2[0] += y01 * f32(qs2 & 0x0300u);
+            acc1[1] += y10 * f32(qs2 & 0x000Cu);
+            acc2[1] += y11 * f32(qs2 & 0x0C00u);
+            acc1[2] += y20 * f32(qs2 & 0x0030u);
+            acc2[2] += y21 * f32(qs2 & 0x3000u);
+            acc1[3] += y30 * f32(qs2 & 0x00C0u);
+            acc2[3] += y31 * f32(qs2 & 0xC000u);
+        }
+        // i=6: j=6,7
+        {
+            let y00 = f32(shared_vector[y_base +  6u]); sumy[0] += y00;
+            let y01 = f32(shared_vector[y_base +  7u]); sumy[0] += y01;
+            let y10 = f32(shared_vector[y_base + 38u]); sumy[1] += y10;
+            let y11 = f32(shared_vector[y_base + 39u]); sumy[1] += y11;
+            let y20 = f32(shared_vector[y_base + 70u]); sumy[2] += y20;
+            let y21 = f32(shared_vector[y_base + 71u]); sumy[2] += y21;
+            let y30 = f32(shared_vector[y_base + 102u]); sumy[3] += y30;
+            let y31 = f32(shared_vector[y_base + 103u]); sumy[3] += y31;
+            acc1[0] += y00 * f32(qs3 & 0x0003u);
+            acc2[0] += y01 * f32(qs3 & 0x0300u);
+            acc1[1] += y10 * f32(qs3 & 0x000Cu);
+            acc2[1] += y11 * f32(qs3 & 0x0C00u);
+            acc1[2] += y20 * f32(qs3 & 0x0030u);
+            acc2[2] += y21 * f32(qs3 & 0x3000u);
+            acc1[3] += y30 * f32(qs3 & 0x00C0u);
+            acc2[3] += y31 * f32(qs3 & 0xC000u);
+        }
+
+        sumf += dall * ((acc1[0] + (1.0/256.0) * acc2[0]) * f32(sc0 & 0xFu)        +
+                        (acc1[1] + (1.0/256.0) * acc2[1]) * f32(sc2 & 0xFu) / 4.0  +
+                        (acc1[2] + (1.0/256.0) * acc2[2]) * f32(sc4 & 0xFu) / 16.0 +
+                        (acc1[3] + (1.0/256.0) * acc2[3]) * f32(sc6 & 0xFu) / 64.0)
+             - dmin * (sumy[0] * f32(sc0 & 0xF0u) + sumy[1] * f32(sc2 & 0xF0u) +
+                       sumy[2] * f32(sc4 & 0xF0u) + sumy[3] * f32(sc6 & 0xF0u));
+    }
+
+    return sumf;
+}
+#endif
+
+#ifdef MUL_ACC_Q3_K
+
+const Q3K_BLOCK_SIZE    = 256u;
+const Q3K_F16_PER_BLOCK = 55u;
+
+fn mul_acc(tig: u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
+    let tid = tig / 4u;
+    let ix  = tig % 4u;
+    let ip  = tid / 4u;
+    let il  = 2u * ((tid % 4u) / 2u);
+    let ir  = tid % 2u;
+    let l0  = 8u * ir;
+
+    let nb            = tile_size / Q3K_BLOCK_SIZE;
+    let k_block_start = k_outer / Q3K_BLOCK_SIZE;
+
+    let q_byte   = 32u + 32u * ip + l0;
+    let h_byte   = l0;
+    let y_offset = 128u * ip + 32u * il + l0;
+
+    let s_shift1 = 4u * ip;
+    let s_shift2 = s_shift1 + il;
+
+    let v1 = select(64.0, 4.0, il == 0u);
+    let v2 = 4.0 * v1;
+    let shift = 2u * il;
+
+    var qm0: u32; var qm1: u32; var qm2: u32; var qm3: u32;
+    if (il == 0u) {
+        qm0 = 0x0003u; qm1 = 0x0300u; qm2 = 0x000Cu; qm3 = 0x0C00u;
+    } else {
+        qm0 = 0x0030u; qm1 = 0x3000u; qm2 = 0x00C0u; qm3 = 0xC000u;
+    }
+
+    let mm_idx = 2u * ip + il / 2u;
+    var hm0: u32; var hm1: u32; var hm2: u32; var hm3: u32;
+    switch (mm_idx) {
+        case 0u: { hm0=0x0001u; hm1=0x0100u; hm2=0x0002u; hm3=0x0200u; }
+        case 1u: { hm0=0x0004u; hm1=0x0400u; hm2=0x0008u; hm3=0x0800u; }
+        case 2u: { hm0=0x0010u; hm1=0x1000u; hm2=0x0020u; hm3=0x2000u; }
+        default: { hm0=0x0040u; hm1=0x4000u; hm2=0x0080u; hm3=0x8000u; }
+    }
+
+    var sumf1 = 0.0;
+    var sumf2 = 0.0;
+
+    for (var i = ix; i < nb; i += 4u) {
+        let bbase = (idx_base + k_block_start + i) * Q3K_F16_PER_BLOCK;
+
+        let d_all = f32(src0[bbase + 54u]);
+
+        // Scale unpacking
+        let a_base = 96u;
+        let a_il0_u32 = load_u32_at(bbase, a_base + il * 2u);
+        let a_il0 = select(a_il0_u32 & 0xFFFFu, a_il0_u32 >> 16u, (il & 1u) != 0u);
+        let a_il1_u32 = load_u32_at(bbase, a_base + (il + 1u) * 2u);
+        let a_il1 = select(a_il1_u32 & 0xFFFFu, a_il1_u32 >> 16u, ((il + 1u) & 1u) != 0u);
+        let a_45_u32 = load_u32_at(bbase, a_base + 8u);
+        let a_4 = a_45_u32 & 0xFFFFu;
+        let a_5 = a_45_u32 >> 16u;
+
+        var scales32 = a_4 | (a_5 << 16u);
+        let aux32 = ((scales32 >> s_shift2) << 4u) & 0x30303030u;
+        scales32 = a_il0 | (a_il1 << 16u);
+        scales32 = ((scales32 >> s_shift1) & 0x0F0F0F0Fu) | aux32;
+
+        let sc0 = i32(byte_of(scales32, 0u)) - 32;
+        let sc1 = i32(byte_of(scales32, 1u)) - 32;
+        let sc2 = i32(byte_of(scales32, 2u)) - 32;
+        let sc3 = i32(byte_of(scales32, 3u)) - 32;
+
+        let y_base = i * Q3K_BLOCK_SIZE + y_offset;
+        var yl: array<f32, 32>;
+        for (var l = 0u; l < 8u; l++) {
+            yl[l +  0] = f32(shared_vector[y_base + l      ]);
+            yl[l +  8] = f32(shared_vector[y_base + l + 16u]);
+            yl[l + 16] = f32(shared_vector[y_base + l + 32u]);
+            yl[l + 24] = f32(shared_vector[y_base + l + 48u]);
+        }
+
+        // First qs/h loop: q[0..3], h[0..3]
+        var s1 = 0.0; var s2 = 0.0; var s3 = 0.0;
+        var s4 = 0.0; var s5 = 0.0; var s6 = 0.0;
+
+        for (var l = 0u; l < 8u; l += 2u) {
+            let q_u32 = load_u32_at(bbase, q_byte + (l & ~2u));
+            let qs    = select(q_u32 & 0xFFFFu, q_u32 >> 16u, (l & 2u) != 0u);
+            let h_u32 = load_u32_at(bbase, h_byte + (l & ~2u));
+            let hv    = select(h_u32 & 0xFFFFu, h_u32 >> 16u, (l & 2u) != 0u);
+
+            s1 += yl[l + 0u] * f32(qs & qm0);
+            s2 += yl[l + 1u] * f32(qs & qm1);
+            s3 += select(0.0, yl[l + 0u], (hv & hm0) == 0u) +
+                  select(0.0, yl[l + 1u], (hv & hm1) == 0u);
+            s4 += yl[l + 16u] * f32(qs & qm2);
+            s5 += yl[l + 17u] * f32(qs & qm3);
+            s6 += select(0.0, yl[l + 16u], (hv & hm2) == 0u) +
+                  select(0.0, yl[l + 17u], (hv & hm3) == 0u);
+        }
+        let d1 = d_all * (s1 + (1.0/256.0)*s2 - s3*v1);
+        let d2 = d_all * (s4 + (1.0/256.0)*s5 - s6*v2);
+        sumf1 += d1 * f32(sc0);
+        sumf2 += d2 * f32(sc2);
+
+        // Second qs/h loop: q[8..11], h[8..11] (16 bytes further)
+        s1 = 0.0; s2 = 0.0; s3 = 0.0;
+        s4 = 0.0; s5 = 0.0; s6 = 0.0;
+
+        for (var l = 0u; l < 8u; l += 2u) {
+            let q_u32 = load_u32_at(bbase, q_byte + 16u + (l & ~2u));
+            let qs    = select(q_u32 & 0xFFFFu, q_u32 >> 16u, (l & 2u) != 0u);
+            let h_u32 = load_u32_at(bbase, h_byte + 16u + (l & ~2u));
+            let hv    = select(h_u32 & 0xFFFFu, h_u32 >> 16u, (l & 2u) != 0u);
+
+            s1 += yl[l +  8u] * f32(qs & qm0);
+            s2 += yl[l +  9u] * f32(qs & qm1);
+            s3 += select(0.0, yl[l +  8u], (hv & hm0) == 0u) +
+                  select(0.0, yl[l +  9u], (hv & hm1) == 0u);
+            s4 += yl[l + 24u] * f32(qs & qm2);
+            s5 += yl[l + 25u] * f32(qs & qm3);
+            s6 += select(0.0, yl[l + 24u], (hv & hm2) == 0u) +
+                  select(0.0, yl[l + 25u], (hv & hm3) == 0u);
+        }
+        let d3 = d_all * (s1 + (1.0/256.0)*s2 - s3*v1);
+        let d4 = d_all * (s4 + (1.0/256.0)*s5 - s6*v2);
+        sumf1 += d3 * f32(sc1);
+        sumf2 += d4 * f32(sc3);
+    }
+
+    return (sumf1 + 0.25 * sumf2) / f32(1u << shift);
+}
+#endif
+
+#ifdef MUL_ACC_Q4_K
+
+const Q4K_BLOCK_SIZE    = 256u;
+const Q4K_F16_PER_BLOCK = 72u;
+
+fn mul_acc(tig: u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
+    let ix = tig / 8u;
+    let it = tig % 8u;
+    let iq = it / 4u;
+    let ir = it % 4u;
+
+    let nb            = tile_size / Q4K_BLOCK_SIZE;
+    let k_block_start = k_outer / Q4K_BLOCK_SIZE;
+
+    let y_offset = 64u * iq + 8u * ir;
+
+    let sc0_byte = 4u + iq * 2u;
+    let sc2_byte = 4u + (iq + 2u) * 2u;
+    let sc4_byte = 4u + (iq + 4u) * 2u;
+    let q1_byte  = 16u + (16u * iq + 4u * ir) * 2u;
+    let q2_byte  = q1_byte + 64u;
+
+    var sumf = 0.0;
+
+    for (var ib = ix; ib < nb; ib += 4u) {
+        let bbase = (idx_base + k_block_start + ib) * Q4K_F16_PER_BLOCK;
+
+        let d    = f32(src0[bbase + 0u]);
+        let dmin = f32(src0[bbase + 1u]);
+
+        let sc0_u32 = load_u32_at(bbase, sc0_byte);
+        let sc0 = select(sc0_u32 & 0xFFFFu, sc0_u32 >> 16u, (sc0_byte & 2u) != 0u);
+        let sc2_u32 = load_u32_at(bbase, sc2_byte);
+        let sc2 = select(sc2_u32 & 0xFFFFu, sc2_u32 >> 16u, (sc2_byte & 2u) != 0u);
+        let sc4_u32 = load_u32_at(bbase, sc4_byte);
+        let sc4 = select(sc4_u32 & 0xFFFFu, sc4_u32 >> 16u, (sc4_byte & 2u) != 0u);
+
+        let sc16_0 =  sc0 & 0x3F3Fu;
+        let sc16_1 =  sc2 & 0x3F3Fu;
+        let sc16_2 = ((sc4        ) & 0x0F0Fu) | ((sc0 & 0xC0C0u) >> 2u);
+        let sc16_3 = ((sc4 >>  4u ) & 0x0F0Fu) | ((sc2 & 0xC0C0u) >> 2u);
+
+        let sc8_0 =  sc16_0 & 0xFFu;
+        let sc8_1 = (sc16_0 >> 8u) & 0xFFu;
+        let sc8_2 =  sc16_1 & 0xFFu;
+        let sc8_3 = (sc16_1 >> 8u) & 0xFFu;
+        let sc8_4 =  sc16_2 & 0xFFu;
+        let sc8_5 = (sc16_2 >> 8u) & 0xFFu;
+        let sc8_6 =  sc16_3 & 0xFFu;
+        let sc8_7 = (sc16_3 >> 8u) & 0xFFu;
+
+        let q1_u32_0 = load_u32_at(bbase, q1_byte);
+        let q1_u32_1 = load_u32_at(bbase, q1_byte + 4u);
+        let q2_u32_0 = load_u32_at(bbase, q2_byte);
+        let q2_u32_1 = load_u32_at(bbase, q2_byte + 4u);
+
+        let q1_0 = q1_u32_0 & 0xFFFFu;
+        let q1_1 = q1_u32_0 >> 16u;
+        let q1_2 = q1_u32_1 & 0xFFFFu;
+        let q1_3 = q1_u32_1 >> 16u;
+        let q2_0 = q2_u32_0 & 0xFFFFu;
+        let q2_1 = q2_u32_0 >> 16u;
+        let q2_2 = q2_u32_1 & 0xFFFFu;
+        let q2_3 = q2_u32_1 >> 16u;
+
+        // Inline y reads — no yl/yh arrays, sumy accumulated inline
+        let y_base = ib * Q4K_BLOCK_SIZE + y_offset;
+
+        var sumy = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        var acc1  = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        var acc2  = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+
+        // i=0: yl[0,1,8,9], yh[0,1,8,9]
+        {
+            let yl0 = f32(shared_vector[y_base +   0u]); sumy[0] += yl0;
+            let yl1 = f32(shared_vector[y_base +   1u]); sumy[0] += yl1;
+            let yl8 = f32(shared_vector[y_base +  32u]); sumy[1] += yl8;
+            let yl9 = f32(shared_vector[y_base +  33u]); sumy[1] += yl9;
+            let yh0 = f32(shared_vector[y_base + 128u]); sumy[2] += yh0;
+            let yh1 = f32(shared_vector[y_base + 129u]); sumy[2] += yh1;
+            let yh8 = f32(shared_vector[y_base + 160u]); sumy[3] += yh8;
+            let yh9 = f32(shared_vector[y_base + 161u]); sumy[3] += yh9;
+            acc1[0] += yl0 * f32(q1_0 & 0x000Fu);
+            acc1[1] += yl1 * f32(q1_0 & 0x0F00u);
+            acc1[2] += yl8 * f32(q1_0 & 0x00F0u);
+            acc1[3] += yl9 * f32(q1_0 & 0xF000u);
+            acc2[0] += yh0 * f32(q2_0 & 0x000Fu);
+            acc2[1] += yh1 * f32(q2_0 & 0x0F00u);
+            acc2[2] += yh8 * f32(q2_0 & 0x00F0u);
+            acc2[3] += yh9 * f32(q2_0 & 0xF000u);
+        }
+        // i=1: yl[2,3,10,11], yh[2,3,10,11]
+        {
+            let yl0 = f32(shared_vector[y_base +   2u]); sumy[0] += yl0;
+            let yl1 = f32(shared_vector[y_base +   3u]); sumy[0] += yl1;
+            let yl8 = f32(shared_vector[y_base +  34u]); sumy[1] += yl8;
+            let yl9 = f32(shared_vector[y_base +  35u]); sumy[1] += yl9;
+            let yh0 = f32(shared_vector[y_base + 130u]); sumy[2] += yh0;
+            let yh1 = f32(shared_vector[y_base + 131u]); sumy[2] += yh1;
+            let yh8 = f32(shared_vector[y_base + 162u]); sumy[3] += yh8;
+            let yh9 = f32(shared_vector[y_base + 163u]); sumy[3] += yh9;
+            acc1[0] += yl0 * f32(q1_1 & 0x000Fu);
+            acc1[1] += yl1 * f32(q1_1 & 0x0F00u);
+            acc1[2] += yl8 * f32(q1_1 & 0x00F0u);
+            acc1[3] += yl9 * f32(q1_1 & 0xF000u);
+            acc2[0] += yh0 * f32(q2_1 & 0x000Fu);
+            acc2[1] += yh1 * f32(q2_1 & 0x0F00u);
+            acc2[2] += yh8 * f32(q2_1 & 0x00F0u);
+            acc2[3] += yh9 * f32(q2_1 & 0xF000u);
+        }
+        // i=2: yl[4,5,12,13], yh[4,5,12,13]
+        {
+            let yl0 = f32(shared_vector[y_base +   4u]); sumy[0] += yl0;
+            let yl1 = f32(shared_vector[y_base +   5u]); sumy[0] += yl1;
+            let yl8 = f32(shared_vector[y_base +  36u]); sumy[1] += yl8;
+            let yl9 = f32(shared_vector[y_base +  37u]); sumy[1] += yl9;
+            let yh0 = f32(shared_vector[y_base + 132u]); sumy[2] += yh0;
+            let yh1 = f32(shared_vector[y_base + 133u]); sumy[2] += yh1;
+            let yh8 = f32(shared_vector[y_base + 164u]); sumy[3] += yh8;
+            let yh9 = f32(shared_vector[y_base + 165u]); sumy[3] += yh9;
+            acc1[0] += yl0 * f32(q1_2 & 0x000Fu);
+            acc1[1] += yl1 * f32(q1_2 & 0x0F00u);
+            acc1[2] += yl8 * f32(q1_2 & 0x00F0u);
+            acc1[3] += yl9 * f32(q1_2 & 0xF000u);
+            acc2[0] += yh0 * f32(q2_2 & 0x000Fu);
+            acc2[1] += yh1 * f32(q2_2 & 0x0F00u);
+            acc2[2] += yh8 * f32(q2_2 & 0x00F0u);
+            acc2[3] += yh9 * f32(q2_2 & 0xF000u);
+        }
+        // i=3: yl[6,7,14,15], yh[6,7,14,15]
+        {
+            let yl0 = f32(shared_vector[y_base +   6u]); sumy[0] += yl0;
+            let yl1 = f32(shared_vector[y_base +   7u]); sumy[0] += yl1;
+            let yl8 = f32(shared_vector[y_base +  38u]); sumy[1] += yl8;
+            let yl9 = f32(shared_vector[y_base +  39u]); sumy[1] += yl9;
+            let yh0 = f32(shared_vector[y_base + 134u]); sumy[2] += yh0;
+            let yh1 = f32(shared_vector[y_base + 135u]); sumy[2] += yh1;
+            let yh8 = f32(shared_vector[y_base + 166u]); sumy[3] += yh8;
+            let yh9 = f32(shared_vector[y_base + 167u]); sumy[3] += yh9;
+            acc1[0] += yl0 * f32(q1_3 & 0x000Fu);
+            acc1[1] += yl1 * f32(q1_3 & 0x0F00u);
+            acc1[2] += yl8 * f32(q1_3 & 0x00F0u);
+            acc1[3] += yl9 * f32(q1_3 & 0xF000u);
+            acc2[0] += yh0 * f32(q2_3 & 0x000Fu);
+            acc2[1] += yh1 * f32(q2_3 & 0x0F00u);
+            acc2[2] += yh8 * f32(q2_3 & 0x00F0u);
+            acc2[3] += yh9 * f32(q2_3 & 0xF000u);
+        }
+
+        sumf += d * ((acc1[0] + (1.0/256.0)*acc1[1]) * f32(sc8_0)              +
+                     (acc1[2] + (1.0/256.0)*acc1[3]) * f32(sc8_1) * (1.0/16.0) +
+                     (acc2[0] + (1.0/256.0)*acc2[1]) * f32(sc8_4)              +
+                     (acc2[2] + (1.0/256.0)*acc2[3]) * f32(sc8_5) * (1.0/16.0))
+             - dmin * (sumy[0] * f32(sc8_2) + sumy[1] * f32(sc8_3) +
+                       sumy[2] * f32(sc8_6) + sumy[3] * f32(sc8_7));
+    }
+
+    return sumf;
+}
+#endif
+
+#ifdef MUL_ACC_Q5_K
+
+const Q5K_BLOCK_SIZE    = 256u;
+const Q5K_F16_PER_BLOCK = 88u;
+
+fn mul_acc(tig: u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
+    let tid = tig / 4u;
+    let ix  = tig % 4u;
+    let iq  = tid / 4u;
+    let ir  = tid % 4u;
+    let l0  = 8u * ir;
+
+    let nb            = tile_size / Q5K_BLOCK_SIZE;
+    let k_block_start = k_outer / Q5K_BLOCK_SIZE;
+
+    let y_offset = 64u * iq + l0;
+    let q1_byte  = 48u + 32u * iq + l0;
+    let q2_byte  = q1_byte + 64u;
+    let qh_byte  = 16u + l0;
+    let sc0_byte = 4u + iq * 2u;
+    let sc2_byte = 4u + (iq + 2u) * 2u;
+    let sc4_byte = 4u + (iq + 4u) * 2u;
+
+    let hm1 = 1u << (2u * iq);
+    let hm2 = hm1 << 1u;
+    let hm3 = hm1 << 4u;
+    let hm4 = hm2 << 4u;
+
+    var sumf = 0.0;
+
+    for (var ib = ix; ib < nb; ib += 4u) {
+        let bbase = (idx_base + k_block_start + ib) * Q5K_F16_PER_BLOCK;
+
+        let d    = f32(src0[bbase + 0u]);
+        let dmin = f32(src0[bbase + 1u]);
+
+        let sc0_u32 = load_u32_at(bbase, sc0_byte);
+        let sc0 = select(sc0_u32 & 0xFFFFu, sc0_u32 >> 16u, (sc0_byte & 2u) != 0u);
+        let sc2_u32 = load_u32_at(bbase, sc2_byte);
+        let sc2 = select(sc2_u32 & 0xFFFFu, sc2_u32 >> 16u, (sc2_byte & 2u) != 0u);
+        let sc4_u32 = load_u32_at(bbase, sc4_byte);
+        let sc4 = select(sc4_u32 & 0xFFFFu, sc4_u32 >> 16u, (sc4_byte & 2u) != 0u);
+
+        let sc16_0 =  sc0 & 0x3F3Fu;
+        let sc16_1 =  sc2 & 0x3F3Fu;
+        let sc16_2 = ((sc4        ) & 0x0F0Fu) | ((sc0 & 0xC0C0u) >> 2u);
+        let sc16_3 = ((sc4 >>  4u ) & 0x0F0Fu) | ((sc2 & 0xC0C0u) >> 2u);
+
+        let sc8_0 =  sc16_0 & 0xFFu;
+        let sc8_1 = (sc16_0 >> 8u) & 0xFFu;
+        let sc8_2 =  sc16_1 & 0xFFu;
+        let sc8_3 = (sc16_1 >> 8u) & 0xFFu;
+        let sc8_4 =  sc16_2 & 0xFFu;
+        let sc8_5 = (sc16_2 >> 8u) & 0xFFu;
+        let sc8_6 =  sc16_3 & 0xFFu;
+        let sc8_7 = (sc16_3 >> 8u) & 0xFFu;
+
+        // Precompute scale factors — separate lo (/16) and hi (*16) variants
+        let f0    = f32(sc8_0);
+        let f1_lo = f32(sc8_1) * (1.0/16.0);
+        let f1_hi = f32(sc8_1) * 16.0;
+        let f4    = f32(sc8_4);
+        let f5_lo = f32(sc8_5) * (1.0/16.0);
+        let f5_hi = f32(sc8_5) * 16.0;
+
+        let q1_u32_0 = load_u32_at(bbase, q1_byte);
+        let q1_u32_1 = load_u32_at(bbase, q1_byte + 4u);
+        let q2_u32_0 = load_u32_at(bbase, q2_byte);
+        let q2_u32_1 = load_u32_at(bbase, q2_byte + 4u);
+        let qh_u32_0 = load_u32_at(bbase, qh_byte);
+        let qh_u32_1 = load_u32_at(bbase, qh_byte + 4u);
+
+        let y_base = ib * Q5K_BLOCK_SIZE + y_offset;
+
+        var sumy = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        var acc1  = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+        var acc2  = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+
+        // l=0
+        {
+            let q1b = byte_of(q1_u32_0, 0u);
+            let q2b = byte_of(q2_u32_0, 0u);
+            let qhb = byte_of(qh_u32_0, 0u);
+            let yl0 = f32(shared_vector[y_base +  0u]); sumy[0] += yl0;
+            let yl8 = f32(shared_vector[y_base + 32u]); sumy[1] += yl8;
+            let yh0 = f32(shared_vector[y_base +128u]); sumy[2] += yh0;
+            let yh8 = f32(shared_vector[y_base +160u]); sumy[3] += yh8;
+            acc1[0] += yl0 * f32(q1b & 0x0Fu);
+            acc1[1] += yl8 * f32(q1b & 0xF0u);
+            acc1[2] += yh0 * f32(q2b & 0x0Fu);
+            acc1[3] += yh8 * f32(q2b & 0xF0u);
+            acc2[0] += yl0 * f32((qhb & hm1) != 0u);
+            acc2[1] += yl8 * f32((qhb & hm2) != 0u);
+            acc2[2] += yh0 * f32((qhb & hm3) != 0u);
+            acc2[3] += yh8 * f32((qhb & hm4) != 0u);
+        }
+        // l=1
+        {
+            let q1b = byte_of(q1_u32_0, 1u);
+            let q2b = byte_of(q2_u32_0, 1u);
+            let qhb = byte_of(qh_u32_0, 1u);
+            let yl0 = f32(shared_vector[y_base +  1u]); sumy[0] += yl0;
+            let yl8 = f32(shared_vector[y_base + 33u]); sumy[1] += yl8;
+            let yh0 = f32(shared_vector[y_base +129u]); sumy[2] += yh0;
+            let yh8 = f32(shared_vector[y_base +161u]); sumy[3] += yh8;
+            acc1[0] += yl0 * f32(q1b & 0x0Fu);
+            acc1[1] += yl8 * f32(q1b & 0xF0u);
+            acc1[2] += yh0 * f32(q2b & 0x0Fu);
+            acc1[3] += yh8 * f32(q2b & 0xF0u);
+            acc2[0] += yl0 * f32((qhb & hm1) != 0u);
+            acc2[1] += yl8 * f32((qhb & hm2) != 0u);
+            acc2[2] += yh0 * f32((qhb & hm3) != 0u);
+            acc2[3] += yh8 * f32((qhb & hm4) != 0u);
+        }
+        // l=2
+        {
+            let q1b = byte_of(q1_u32_0, 2u);
+            let q2b = byte_of(q2_u32_0, 2u);
+            let qhb = byte_of(qh_u32_0, 2u);
+            let yl0 = f32(shared_vector[y_base +  2u]); sumy[0] += yl0;
+            let yl8 = f32(shared_vector[y_base + 34u]); sumy[1] += yl8;
+            let yh0 = f32(shared_vector[y_base +130u]); sumy[2] += yh0;
+            let yh8 = f32(shared_vector[y_base +162u]); sumy[3] += yh8;
+            acc1[0] += yl0 * f32(q1b & 0x0Fu);
+            acc1[1] += yl8 * f32(q1b & 0xF0u);
+            acc1[2] += yh0 * f32(q2b & 0x0Fu);
+            acc1[3] += yh8 * f32(q2b & 0xF0u);
+            acc2[0] += yl0 * f32((qhb & hm1) != 0u);
+            acc2[1] += yl8 * f32((qhb & hm2) != 0u);
+            acc2[2] += yh0 * f32((qhb & hm3) != 0u);
+            acc2[3] += yh8 * f32((qhb & hm4) != 0u);
+        }
+        // l=3
+        {
+            let q1b = byte_of(q1_u32_0, 3u);
+            let q2b = byte_of(q2_u32_0, 3u);
+            let qhb = byte_of(qh_u32_0, 3u);
+            let yl0 = f32(shared_vector[y_base +  3u]); sumy[0] += yl0;
+            let yl8 = f32(shared_vector[y_base + 35u]); sumy[1] += yl8;
+            let yh0 = f32(shared_vector[y_base +131u]); sumy[2] += yh0;
+            let yh8 = f32(shared_vector[y_base +163u]); sumy[3] += yh8;
+            acc1[0] += yl0 * f32(q1b & 0x0Fu);
+            acc1[1] += yl8 * f32(q1b & 0xF0u);
+            acc1[2] += yh0 * f32(q2b & 0x0Fu);
+            acc1[3] += yh8 * f32(q2b & 0xF0u);
+            acc2[0] += yl0 * f32((qhb & hm1) != 0u);
+            acc2[1] += yl8 * f32((qhb & hm2) != 0u);
+            acc2[2] += yh0 * f32((qhb & hm3) != 0u);
+            acc2[3] += yh8 * f32((qhb & hm4) != 0u);
+        }
+        // l=4
+        {
+            let q1b = byte_of(q1_u32_1, 0u);
+            let q2b = byte_of(q2_u32_1, 0u);
+            let qhb = byte_of(qh_u32_1, 0u);
+            let yl0 = f32(shared_vector[y_base +  4u]); sumy[0] += yl0;
+            let yl8 = f32(shared_vector[y_base + 36u]); sumy[1] += yl8;
+            let yh0 = f32(shared_vector[y_base +132u]); sumy[2] += yh0;
+            let yh8 = f32(shared_vector[y_base +164u]); sumy[3] += yh8;
+            acc1[0] += yl0 * f32(q1b & 0x0Fu);
+            acc1[1] += yl8 * f32(q1b & 0xF0u);
+            acc1[2] += yh0 * f32(q2b & 0x0Fu);
+            acc1[3] += yh8 * f32(q2b & 0xF0u);
+            acc2[0] += yl0 * f32((qhb & hm1) != 0u);
+            acc2[1] += yl8 * f32((qhb & hm2) != 0u);
+            acc2[2] += yh0 * f32((qhb & hm3) != 0u);
+            acc2[3] += yh8 * f32((qhb & hm4) != 0u);
+        }
+        // l=5
+        {
+            let q1b = byte_of(q1_u32_1, 1u);
+            let q2b = byte_of(q2_u32_1, 1u);
+            let qhb = byte_of(qh_u32_1, 1u);
+            let yl0 = f32(shared_vector[y_base +  5u]); sumy[0] += yl0;
+            let yl8 = f32(shared_vector[y_base + 37u]); sumy[1] += yl8;
+            let yh0 = f32(shared_vector[y_base +133u]); sumy[2] += yh0;
+            let yh8 = f32(shared_vector[y_base +165u]); sumy[3] += yh8;
+            acc1[0] += yl0 * f32(q1b & 0x0Fu);
+            acc1[1] += yl8 * f32(q1b & 0xF0u);
+            acc1[2] += yh0 * f32(q2b & 0x0Fu);
+            acc1[3] += yh8 * f32(q2b & 0xF0u);
+            acc2[0] += yl0 * f32((qhb & hm1) != 0u);
+            acc2[1] += yl8 * f32((qhb & hm2) != 0u);
+            acc2[2] += yh0 * f32((qhb & hm3) != 0u);
+            acc2[3] += yh8 * f32((qhb & hm4) != 0u);
+        }
+        // l=6
+        {
+            let q1b = byte_of(q1_u32_1, 2u);
+            let q2b = byte_of(q2_u32_1, 2u);
+            let qhb = byte_of(qh_u32_1, 2u);
+            let yl0 = f32(shared_vector[y_base +  6u]); sumy[0] += yl0;
+            let yl8 = f32(shared_vector[y_base + 38u]); sumy[1] += yl8;
+            let yh0 = f32(shared_vector[y_base +134u]); sumy[2] += yh0;
+            let yh8 = f32(shared_vector[y_base +166u]); sumy[3] += yh8;
+            acc1[0] += yl0 * f32(q1b & 0x0Fu);
+            acc1[1] += yl8 * f32(q1b & 0xF0u);
+            acc1[2] += yh0 * f32(q2b & 0x0Fu);
+            acc1[3] += yh8 * f32(q2b & 0xF0u);
+            acc2[0] += yl0 * f32((qhb & hm1) != 0u);
+            acc2[1] += yl8 * f32((qhb & hm2) != 0u);
+            acc2[2] += yh0 * f32((qhb & hm3) != 0u);
+            acc2[3] += yh8 * f32((qhb & hm4) != 0u);
+        }
+        // l=7
+        {
+            let q1b = byte_of(q1_u32_1, 3u);
+            let q2b = byte_of(q2_u32_1, 3u);
+            let qhb = byte_of(qh_u32_1, 3u);
+            let yl0 = f32(shared_vector[y_base +  7u]); sumy[0] += yl0;
+            let yl8 = f32(shared_vector[y_base + 39u]); sumy[1] += yl8;
+            let yh0 = f32(shared_vector[y_base +135u]); sumy[2] += yh0;
+            let yh8 = f32(shared_vector[y_base +167u]); sumy[3] += yh8;
+            acc1[0] += yl0 * f32(q1b & 0x0Fu);
+            acc1[1] += yl8 * f32(q1b & 0xF0u);
+            acc1[2] += yh0 * f32(q2b & 0x0Fu);
+            acc1[3] += yh8 * f32(q2b & 0xF0u);
+            acc2[0] += yl0 * f32((qhb & hm1) != 0u);
+            acc2[1] += yl8 * f32((qhb & hm2) != 0u);
+            acc2[2] += yh0 * f32((qhb & hm3) != 0u);
+            acc2[3] += yh8 * f32((qhb & hm4) != 0u);
+        }
+
+        sumf += d    * (f0    * acc1[0] + f0    * 16.0 * acc2[0] +
+                        f1_lo * acc1[1] + f1_hi *        acc2[1] +
+                        f4    * acc1[2] + f4    * 16.0 * acc2[2] +
+                        f5_lo * acc1[3] + f5_hi *        acc2[3])
+              - dmin * (sumy[0]*f32(sc8_2) + sumy[1]*f32(sc8_3) +
+                        sumy[2]*f32(sc8_6) + sumy[3]*f32(sc8_7));
+    }
+
+    return sumf;
+}
+#endif
+
 #ifdef MUL_ACC_Q6_K
 
 const BLOCK_SIZE = 256u;
 const F16_PER_BLOCK = 105u;
-
-fn load_u32_at(bbase: u32, byte_offset: u32) -> u32 {
-    let aligned = byte_offset & ~3u;
-    let idx = bbase + aligned / 2u;
-    return bitcast<u32>(vec2(src0[idx], src0[idx + 1u]));
-}
-
-fn byte_of(v: u32, b: u32) -> u32 {
-    return (v >> (b * 8u)) & 0xFFu;
-}
-
-fn sbyte_of(v: u32, b: u32) -> i32 {
-    let raw = i32((v >> (b * 8u)) & 0xFFu);
-    return select(raw, raw - 256, raw >= 128);
-}
 
 fn mul_acc(tig: u32, tile_size: u32, idx_base: u32, k_outer: u32) -> f32 {
     let tid = tig / 2u;
