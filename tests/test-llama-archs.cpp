@@ -10,9 +10,11 @@
 #include "../src/llama-model-saver.h"
 
 #include <cinttypes>
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
+#include <limits>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -60,7 +62,120 @@ static void set_tensor_data(struct ggml_tensor * tensor, void * userdata) {
 }
 
 static void usage(char ** argv) {
-    printf("Usage: %s [-a/--arch arch] [-s/--seed seed] [-v/--verbose]\n", argv[0]);
+    printf("Usage: %s [-a/--arch arch] [-s/--seed seed] [-v/--verbose] [--trace-divergence]\n", argv[0]);
+}
+
+struct tensor_trace_entry {
+    std::string        name;
+    std::string        op_name;
+    ggml_type          type = GGML_TYPE_F32;
+    std::vector<int64_t> ne;
+    std::vector<float> data;
+};
+
+struct tensor_trace_recorder {
+    std::vector<tensor_trace_entry> entries;
+};
+
+struct tensor_trace_mismatch {
+    size_t      index = 0;
+    std::string name;
+    std::string op_name;
+    double      value = 0.0;
+};
+
+static std::vector<float> trace_tensor_to_f32(const ggml_tensor * tensor) {
+    const int64_t ne = ggml_nelements(tensor);
+    std::vector<float> out(ne);
+
+    if (tensor->type == GGML_TYPE_F32) {
+        ggml_backend_tensor_get(tensor, out.data(), 0, ggml_nbytes(tensor));
+        return out;
+    }
+
+    if (tensor->type == GGML_TYPE_F16) {
+        std::vector<ggml_fp16_t> tmp(ne);
+        ggml_backend_tensor_get(tensor, tmp.data(), 0, ggml_nbytes(tensor));
+        for (int64_t i = 0; i < ne; ++i) {
+            out[i] = ggml_fp16_to_fp32(tmp[i]);
+        }
+        return out;
+    }
+
+    return {};
+}
+
+static bool trace_eval_callback(struct ggml_tensor * tensor, bool ask, void * user_data) {
+    if (ask) {
+        return tensor->type == GGML_TYPE_F32 || tensor->type == GGML_TYPE_F16;
+    }
+
+    auto * recorder = static_cast<tensor_trace_recorder *>(user_data);
+
+    tensor_trace_entry entry;
+    entry.name = tensor->name;
+    if (entry.name.empty()) {
+        entry.name = "(unnamed)";
+    }
+    entry.op_name = ggml_op_name(tensor->op);
+    entry.type = tensor->type;
+    entry.ne = { tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3] };
+    entry.data = trace_tensor_to_f32(tensor);
+    recorder->entries.push_back(std::move(entry));
+
+    return true;
+}
+
+static void print_trace_divergence_report(
+        const std::string & label,
+        const std::vector<tensor_trace_entry> & cpu_entries,
+        const std::vector<tensor_trace_entry> & dev_entries) {
+    const size_t n = std::min(cpu_entries.size(), dev_entries.size());
+    std::vector<tensor_trace_mismatch> mismatches;
+    mismatches.reserve(n);
+
+    tensor_trace_mismatch first_bad;
+    bool have_first_bad = false;
+
+    for (size_t i = 0; i < n; ++i) {
+        const auto & cpu = cpu_entries[i];
+        const auto & dev = dev_entries[i];
+        if (cpu.data.size() != dev.data.size()) {
+            printf("%s: trace size mismatch at node %zu: cpu=%zu dev=%zu name='%s' op=%s\n",
+                    label.c_str(), i, cpu.data.size(), dev.data.size(), cpu.name.c_str(), cpu.op_name.c_str());
+            break;
+        }
+
+        const double node_nmse = nmse(cpu.data, dev.data);
+        mismatches.push_back({ i, cpu.name, cpu.op_name, node_nmse });
+        if (!have_first_bad && node_nmse > 1e-4) {
+            first_bad = mismatches.back();
+            have_first_bad = true;
+        }
+    }
+
+    if (cpu_entries.size() != dev_entries.size()) {
+        printf("%s: trace node count mismatch: cpu=%zu dev=%zu\n",
+                label.c_str(), cpu_entries.size(), dev_entries.size());
+    }
+
+    if (have_first_bad) {
+        printf("%s: first divergent node: #%zu name='%s' op=%s nmse=%.6e\n",
+                label.c_str(), first_bad.index, first_bad.name.c_str(), first_bad.op_name.c_str(), first_bad.value);
+    } else {
+        printf("%s: no divergent intermediate nodes above threshold\n", label.c_str());
+    }
+
+    std::sort(mismatches.begin(), mismatches.end(), [](const tensor_trace_mismatch & a, const tensor_trace_mismatch & b) {
+        return a.value > b.value;
+    });
+
+    const size_t limit = std::min<size_t>(10, mismatches.size());
+    for (size_t i = 0; i < limit; ++i) {
+        const auto & m = mismatches[i];
+        printf("%s: top mismatch #%zu node=%zu name='%s' op=%s nmse=%.6e\n",
+                label.c_str(), i + 1, m.index, m.name.c_str(), m.op_name.c_str(), m.value);
+    }
 }
 
 static std::vector<llama_token> get_tokens(const uint32_t n_tokens, const uint32_t n_vocab, const size_t seed){
@@ -235,7 +350,8 @@ static bool silent_model_load_progress(float /*progress*/, void * /*user_data*/)
 }
 
 static std::pair<llama_model_ptr, llama_context_ptr> get_model_and_ctx(
-        struct gguf_context * gguf_ctx, FILE * file, const size_t seed, const std::vector<ggml_backend_dev_t> & devs) {
+        struct gguf_context * gguf_ctx, FILE * file, const size_t seed, const std::vector<ggml_backend_dev_t> & devs,
+        tensor_trace_recorder * trace_recorder = nullptr) {
     GGML_ASSERT((gguf_ctx == nullptr) != (file == nullptr));
     llama_model_params model_params = llama_model_default_params();
     model_params.progress_callback = silent_model_load_progress;
@@ -247,6 +363,10 @@ static std::pair<llama_model_ptr, llama_context_ptr> get_model_and_ctx(
     ctx_params.n_ctx = 0;
     ctx_params.n_threads = 4;
     ctx_params.n_threads_batch = 4;
+    if (trace_recorder != nullptr) {
+        ctx_params.cb_eval = trace_eval_callback;
+        ctx_params.cb_eval_user_data = trace_recorder;
+    }
 
     size_t tmp = seed;
     llama_model_ptr model(gguf_ctx != nullptr ?
@@ -417,7 +537,7 @@ static int save_models(const llm_arch target_arch, const size_t seed, const ggml
     return 0;
 }
 
-static int test_backends(const llm_arch target_arch, const size_t seed, const ggml_log_level log_level) {
+static int test_backends(const llm_arch target_arch, const size_t seed, const ggml_log_level log_level, const bool trace_divergence) {
     struct user_data_t {
         struct {
             ggml_log_callback callback;
@@ -487,14 +607,18 @@ static int test_backends(const llm_arch target_arch, const size_t seed, const gg
                 continue;
             }
             gguf_context_ptr gguf_ctx = get_gguf_ctx(arch, moe);
-            auto model_and_ctx_cpu = get_model_and_ctx(gguf_ctx.get(), nullptr, seed, {});
+            tensor_trace_recorder trace_cpu;
+            auto model_and_ctx_cpu = get_model_and_ctx(gguf_ctx.get(), nullptr, seed, {},
+                    trace_divergence ? &trace_cpu : nullptr);
             const std::vector<float> logits_cpu = get_logits(model_and_ctx_cpu.first.get(), model_and_ctx_cpu.second.get(), tokens, encode);
             for (size_t i = 0; i < ggml_backend_dev_count(); i++) {
                 ggml_backend_dev_t dev = ggml_backend_dev_get(i);
                 if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) {
                     continue;
                 }
-                auto model_and_ctx_dev = get_model_and_ctx(gguf_ctx.get(), nullptr, seed, {dev});
+                tensor_trace_recorder trace_dev;
+                auto model_and_ctx_dev = get_model_and_ctx(gguf_ctx.get(), nullptr, seed, {dev},
+                        trace_divergence ? &trace_dev : nullptr);
                 std::string config_name = moe ? "MoE" : "Dense";
                 const std::vector<float> logits_dev = get_logits(model_and_ctx_dev.first.get(), model_and_ctx_dev.second.get(), tokens, encode);
                 const double nmse_val = nmse(logits_cpu, logits_dev);
@@ -531,6 +655,11 @@ static int test_backends(const llm_arch target_arch, const size_t seed, const gg
 
                 printf("|%15s|%30s|%6s|%15s (%8s)|%20s|\n", llm_arch_name(arch), ggml_backend_dev_description(dev),
                     config_name.c_str(), status_nmse.c_str(), nmse_str, status_roundtrip.c_str());
+
+                if (trace_divergence) {
+                    std::string label = std::string(llm_arch_name(arch)) + "/" + config_name + "/" + ggml_backend_dev_description(dev);
+                    print_trace_divergence_report(label, trace_cpu.entries, trace_dev.entries);
+                }
             }
         }
     }
@@ -547,6 +676,7 @@ int main(int argc, char ** argv) {
     size_t seed = rd();
     ggml_log_level log_level = GGML_LOG_LEVEL_ERROR;
     std::string out;
+    bool trace_divergence = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-a") == 0 || strcmp(argv[i], "--arch") == 0) {
@@ -574,6 +704,10 @@ int main(int argc, char ** argv) {
             log_level = GGML_LOG_LEVEL_INFO;
             continue;
         }
+        if (strcmp(argv[i], "--trace-divergence") == 0) {
+            trace_divergence = true;
+            continue;
+        }
         if (strcmp(argv[i], "-o") == 0 || strcmp(argv[i], "--out") == 0) {
             if (i + 1 < argc) {
                 out = argv[++i];
@@ -589,7 +723,7 @@ int main(int argc, char ** argv) {
         if (!out.empty()) {
             return save_models(arch, seed, log_level, out);
         }
-        return test_backends(arch, seed, log_level);
+        return test_backends(arch, seed, log_level, trace_divergence);
     } catch (const std::exception & err) {
         fprintf(stderr, "encountered runtime error: %s\n", err.what());
         return -1;
