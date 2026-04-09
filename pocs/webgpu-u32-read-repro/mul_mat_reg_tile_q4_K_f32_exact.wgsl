@@ -157,7 +157,11 @@ fn init_shmem_src0(thread_id: u32, batch_offset: u32, offset_m: u32, k_outer: u3
         let qs_val = (q_byte >> shift) & 0xFu;
 
         let q_val = f16(qs_val) * dl - ml;
-        shmem[elem_idx] = q_val;
+        if (thread_id == 0u && batch_offset == 0u && offset_m == 0u && k_outer == 0u && elem_idx == 0u) {
+            shmem[elem_idx] = f16(get_byte(scale_vals[0], 0u) & 63u);
+        } else {
+            shmem[elem_idx] = q_val;
+        }
     }
 }
 
@@ -192,6 +196,7 @@ struct MulMatParams {
 @group(0) @binding(2) var<storage, read_write> dst: array<f32>; // M rows, N columns (transposed)
 
 @group(0) @binding(3) var<uniform> params: MulMatParams;
+@group(0) @binding(4) var<storage, read_write> debug_out: array<u32>;
 
 fn get_local_n(thread_id: u32) -> u32 {
     return thread_id / 8u;
@@ -252,6 +257,12 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
     let offset_n = wg_n * 8u * 8u;
 
     var acc: array<array<f32, 8u>, 8u>;
+    if (wg_id.x == 0u && wg_id.y == 0u && thread_id == 0u) {
+        debug_out[0] = 0xdeadbeefu;
+        debug_out[1] = src0[0];
+        debug_out[2] = load_src0_u16_at(0u);
+        debug_out[3] = load_src0_u32_at(4u);
+    }
 
     for (var k_outer = 0u; k_outer < params.k; k_outer += 32u) {
 
@@ -260,6 +271,11 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
         init_shmem_src1(thread_id, src1_batch_offset, offset_n, k_outer);
 
         workgroupBarrier();
+
+        if (k_outer == 0u && wg_id.x == 0u && wg_id.y == 0u && thread_id == 0u) {
+            debug_out[4] = bitcast<u32>(f32(shmem[0]));
+            debug_out[5] = bitcast<u32>(f32(shmem[TILE_SRC0_SHMEM]));
+        }
 
         let k_end = min(32u, params.k - k_outer);
 
@@ -281,6 +297,11 @@ fn main(@builtin(workgroup_id) wg_id: vec3<u32>,
         }
 
         workgroupBarrier();
+    }
+
+    if (wg_id.x == 0u && wg_id.y == 0u && thread_id == 0u) {
+        debug_out[6] = bitcast<u32>(acc[0][0]);
+        debug_out[7] = bitcast<u32>(acc[0][1]);
     }
 
     let dst_batch_offset = params.offset_dst + dst3_idx * dst3_stride + dst2_idx * dst2_stride;

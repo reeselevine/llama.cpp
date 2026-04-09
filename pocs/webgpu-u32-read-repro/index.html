@@ -64,7 +64,8 @@
     const logEl = document.getElementById("log");
     const runBtn = document.getElementById("run");
 
-    const shaderUrl = "./mul_mat_reg_tile_q4_K_f32_exact.wgsl";
+    const shaderPath = "./mul_mat_reg_tile_q4_K_f32_exact.wgsl";
+    const shaderUrl = `${shaderPath}?v=failing-debug-sc-direct-1`;
 
     function hex32(v) {
       return "0x" + v.toString(16).padStart(8, "0");
@@ -384,6 +385,11 @@
         size: outElems * 4,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
       });
+      const debugWords = 8;
+      const debugBuf = device.createBuffer({
+        size: debugWords * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+      });
       const paramsBuf = device.createBuffer({
         size: paramsWords.byteLength,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
@@ -393,9 +399,13 @@
         size: outElems * 4,
         usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
       });
+      const debugReadBuf = device.createBuffer({
+        size: debugWords * 4,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
       device.pushErrorScope("validation");
       device.pushErrorScope("internal");
-      const shader = await fetch(shaderUrl).then((r) => r.text());
+      const shader = await fetch(shaderUrl, { cache: "no-store" }).then((r) => r.text());
       const module = device.createShaderModule({ code: shader });
       const info = await module.getCompilationInfo();
       const compilationMessages = info.messages || [];
@@ -411,6 +421,7 @@
           { binding: 1, resource: { buffer: src1Buf } },
           { binding: 2, resource: { buffer: outBuf } },
           { binding: 3, resource: { buffer: paramsBuf } },
+          { binding: 4, resource: { buffer: debugBuf } },
         ],
       });
 
@@ -421,6 +432,7 @@
       pass.dispatchWorkgroups(24, 1, 1);
       pass.end();
       encoder.copyBufferToBuffer(outBuf, 0, readBuf, 0, outElems * 4);
+      encoder.copyBufferToBuffer(debugBuf, 0, debugReadBuf, 0, debugWords * 4);
       device.queue.submit([encoder.finish()]);
       const internalError = await device.popErrorScope();
       const validationError = await device.popErrorScope();
@@ -428,12 +440,15 @@
       await readBuf.mapAsync(GPUMapMode.READ);
       const result = new Float32Array(readBuf.getMappedRange().slice(0));
       readBuf.unmap();
+      await debugReadBuf.mapAsync(GPUMapMode.READ);
+      const debugResult = new Uint32Array(debugReadBuf.getMappedRange().slice(0));
+      debugReadBuf.unmap();
 
       const lines = [
         `adapter: ${adapter.info?.vendor || "unknown"} / ${adapter.info?.architecture || "unknown"} / ${adapter.info?.description || "unknown"}`,
         `shader-f16 requested: ${requiredFeatures.includes("shader-f16") ? "yes" : "no"}`,
         "data source: q4_K-packed random rows",
-        `shader source: ${shaderUrl}`,
+        `shader source: ${shaderPath}`,
         "",
         "selected input words:",
       ];
@@ -461,6 +476,19 @@
         if (validationError) {
           lines.push(`  validation: ${validationError.message}`);
         }
+      }
+      lines.push("");
+      lines.push("debug words:");
+      lines.push("  [0] sentinel");
+      lines.push("  [1] src0[0]");
+      lines.push("  [2] load_src0_u16_at(0)");
+      lines.push("  [3] load_src0_u32_at(4)");
+      lines.push("  [4] shmem[0] bits after first stage");
+      lines.push("  [5] shmem[TILE_SRC0_SHMEM] bits after first stage");
+      lines.push("  [6] acc[0][0] bits");
+      lines.push("  [7] acc[0][1] bits");
+      for (let i = 0; i < debugResult.length; i++) {
+        lines.push(`  dbg[${i}] = ${hex32(debugResult[i])} (${debugResult[i]})`);
       }
       lines.push("");
       lines.push("first output floats:");
