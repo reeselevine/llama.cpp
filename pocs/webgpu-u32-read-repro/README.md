@@ -1,30 +1,69 @@
-# WebGPU U32 Read Repro
+# Potential Dawn/Metal shader bug
 
-Small standalone browser repro for the WebGPU quant-buffer read issue seen in the fast `q4_K` path.
+## Issue
 
-It does not depend on `llama.cpp` runtime code. The page:
+The shader in `mul_mat_reg_tile_q4_K_f32_exact.wgsl` reads three fixed `u32` words from a storage buffer and extracts bytes from them inside a small loop.
 
-- creates a synthetic 144-byte `q4_K`-like block
-- uploads it as a `storage` buffer of `u32`
-- runs a compute shader using the same helper style as `common_decls.tmpl`
-- prints the results of direct `src0[...]`, `load_src0_u16_at(...)`, `load_src0_u32_at(...)`, and `get_byte(...)`
+Expected debug output is:
 
-## Run
+- `dbg[0] = 0xdeadbeef`
+- `dbg[1] = 1`
+- `dbg[2] = 2`
+- `dbg[3] = 3`
 
-Serve the repo root or this directory over HTTP and open:
+Observed on Apple Metal via Dawn:
 
-- `pocs/webgpu-u32-read-repro/index.html`
+- default settings: fails, `dbg[1..3] = 0`
+- with `disable_robustness`: passes
+- with `disable_polyfills_on_integer_div_and_mod`: passes
+
+So either of those Dawn toggles is sufficient to make the repro pass.
+
+## Browser Repro
+
+Serve this directory over HTTP and open:
+
+- `index.html`
 
 Example:
 
 ```bash
-python3 -m http.server
+python3 -m http.server 8000
 ```
 
 Then open:
 
-- `http://localhost:8000/pocs/webgpu-u32-read-repro/`
+- `http://localhost:8000/`
 
-## Goal
+The page prints expected and actual debug values. Testing shows this fails on Chrome on Apple Silicon, but passes on Safari.
 
-Compare Chrome vs Safari for the same shader and uploaded data, without involving the full `llama.cpp` graph.
+## Native Runner
+
+This directory also contains a small Dawn-based native runner in `run-repro.cpp`.
+
+Build it directly from this subdirectory:
+
+```bash
+cmake -S . -B build
+cmake --build build --target webgpu-u32-read-repro-runner
+```
+
+Run:
+
+```bash
+./build/webgpu-u32-read-repro-runner --shader mul_mat_reg_tile_q4_K_f32_exact.wgsl
+```
+
+Useful toggle variants:
+
+```bash
+./build/webgpu-u32-read-repro-runner --shader mul_mat_reg_tile_q4_K_f32_exact.wgsl --disable-robustness
+./build/webgpu-u32-read-repro-runner --shader mul_mat_reg_tile_q4_K_f32_exact.wgsl --disable-polyfill-divmod
+./build/webgpu-u32-read-repro-runner --shader mul_mat_reg_tile_q4_K_f32_exact.wgsl --disable-robustness --disable-polyfill-divmod
+```
+
+If Dawn is not discoverable via CMake:
+
+```bash
+cmake -S . -B build -DCMAKE_PREFIX_PATH=/path/to/dawn/install
+```
