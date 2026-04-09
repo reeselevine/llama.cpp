@@ -1,0 +1,482 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WebGPU U32 Read Repro</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #0f1115;
+      --panel: #171a21;
+      --text: #e7ecf3;
+      --muted: #a9b3c3;
+      --accent: #7dd3fc;
+      --border: #2b3240;
+    }
+    body {
+      margin: 0;
+      padding: 24px;
+      font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      background: radial-gradient(circle at top left, #1a2030, var(--bg) 55%);
+      color: var(--text);
+    }
+    .wrap {
+      max-width: 980px;
+      margin: 0 auto;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: 24px;
+    }
+    p {
+      margin: 0 0 16px;
+      color: var(--muted);
+    }
+    button {
+      border: 1px solid var(--border);
+      background: linear-gradient(180deg, #1f2735, #151a23);
+      color: var(--text);
+      padding: 10px 14px;
+      border-radius: 10px;
+      cursor: pointer;
+      font: inherit;
+    }
+    pre {
+      margin-top: 16px;
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--panel);
+      overflow: auto;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>WebGPU U32 Read Repro</h1>
+    <p>Mirrors the failing <code>test-backend-ops</code> q4_K x f32 WebGPU fast-path case as closely as possible in a standalone page.</p>
+    <button id="run">Run Repro</button>
+    <pre id="log">Idle.</pre>
+  </div>
+  <script type="module">
+    const logEl = document.getElementById("log");
+    const runBtn = document.getElementById("run");
+
+    const shaderUrl = "./mul_mat_reg_tile_q4_K_f32_exact.wgsl";
+
+    function hex32(v) {
+      return "0x" + v.toString(16).padStart(8, "0");
+    }
+
+    const QK_K = 256;
+    const BLOCK_BYTES = 144;
+    const BLOCKS_PER_ROW = 6;
+    const M = 1536;
+    const N = 32;
+    const K = 1536;
+
+    function xorshift32(state) {
+      let x = state >>> 0;
+      x ^= (x << 13) >>> 0;
+      x ^= x >>> 17;
+      x ^= (x << 5) >>> 0;
+      return x >>> 0;
+    }
+
+    function rngFloatSigned(state) {
+      const next = xorshift32(state);
+      return [next, ((next / 0xffffffff) * 2.0) - 1.0];
+    }
+
+    function nearestInt(x) {
+      return x < 0 ? -Math.round(-x) : Math.round(x);
+    }
+
+    function float32ToF16Bits(val) {
+      const f32 = new Float32Array(1);
+      const u32 = new Uint32Array(f32.buffer);
+      f32[0] = val;
+      const x = u32[0];
+
+      const sign = (x >>> 16) & 0x8000;
+      let mantissa = x & 0x007fffff;
+      let exp = (x >>> 23) & 0xff;
+
+      if (exp === 0xff) {
+        if (mantissa !== 0) return sign | 0x7e00;
+        return sign | 0x7c00;
+      }
+
+      if (exp === 0) {
+        return sign;
+      }
+
+      exp = exp - 127 + 15;
+      if (exp >= 0x1f) {
+        return sign | 0x7c00;
+      }
+      if (exp <= 0) {
+        if (exp < -10) {
+          return sign;
+        }
+        mantissa = (mantissa | 0x00800000) >>> (1 - exp);
+        return sign | ((mantissa + 0x00001000) >>> 13);
+      }
+      return sign | (exp << 10) | ((mantissa + 0x00001000) >>> 13);
+    }
+
+    function makeQkx2Quants(n, nmax, x, weights, L, theMin, Laux, rmin, rdelta, nstep, useMad) {
+      let min = x[0];
+      let max = x[0];
+      let sumW = weights[0];
+      let sumX = sumW * x[0];
+
+      for (let i = 1; i < n; ++i) {
+        if (x[i] < min) min = x[i];
+        if (x[i] > max) max = x[i];
+        const w = weights[i];
+        sumW += w;
+        sumX += w * x[i];
+      }
+
+      if (min > 0) min = 0;
+      if (max === min) {
+        for (let i = 0; i < n; ++i) L[i] = 0;
+        theMin.value = -min;
+        return 0;
+      }
+
+      let iscale = nmax / (max - min);
+      let scale = 1 / iscale;
+      let bestError = 0;
+
+      for (let i = 0; i < n; ++i) {
+        let l = nearestInt(iscale * (x[i] - min));
+        l = Math.max(0, Math.min(nmax, l));
+        L[i] = l;
+        let diff = scale * L[i] + min - x[i];
+        diff = useMad ? Math.abs(diff) : diff * diff;
+        bestError += weights[i] * diff;
+      }
+
+      if (nstep < 1) {
+        theMin.value = -min;
+        return scale;
+      }
+
+      for (let is = 0; is <= nstep; ++is) {
+        iscale = (rmin + rdelta * is + nmax) / (max - min);
+        let sumL = 0;
+        let sumL2 = 0;
+        let sumXL = 0;
+        for (let i = 0; i < n; ++i) {
+          let l = nearestInt(iscale * (x[i] - min));
+          l = Math.max(0, Math.min(nmax, l));
+          Laux[i] = l;
+          const w = weights[i];
+          sumL += w * l;
+          sumL2 += w * l * l;
+          sumXL += w * l * x[i];
+        }
+
+        const D = sumW * sumL2 - sumL * sumL;
+        if (D <= 0) continue;
+
+        let thisScale = (sumW * sumXL - sumX * sumL) / D;
+        let thisMin = (sumL2 * sumX - sumL * sumXL) / D;
+        if (thisMin > 0) {
+          thisMin = 0;
+          thisScale = sumXL / sumL2;
+        }
+
+        let curError = 0;
+        for (let i = 0; i < n; ++i) {
+          let diff = thisScale * Laux[i] + thisMin - x[i];
+          diff = useMad ? Math.abs(diff) : diff * diff;
+          curError += weights[i] * diff;
+        }
+
+        if (curError < bestError) {
+          for (let i = 0; i < n; ++i) L[i] = Laux[i];
+          bestError = curError;
+          scale = thisScale;
+          min = thisMin;
+        }
+      }
+
+      theMin.value = -min;
+      return scale;
+    }
+
+    function getScaleMinK4(j, q) {
+      if (j < 4) {
+        return [q[j] & 63, q[j + 4] & 63];
+      }
+      return [
+        (q[j + 4] & 0x0f) | ((q[j - 4] >> 6) << 4),
+        (q[j + 4] >> 4) | ((q[j - 0] >> 6) << 4),
+      ];
+    }
+
+    function quantizeQ4KBlock(x, view, blockBase) {
+      const L = new Uint8Array(QK_K);
+      const Laux = new Uint8Array(32);
+      const weights = new Float32Array(32);
+      const mins = new Float32Array(QK_K / 32);
+      const scales = new Float32Array(QK_K / 32);
+      const packedScales = new Uint8Array(12);
+
+      let maxScale = 0;
+      let maxMin = 0;
+
+      for (let j = 0; j < QK_K / 32; ++j) {
+        let sumX2 = 0;
+        for (let l = 0; l < 32; ++l) {
+          const xv = x[32 * j + l];
+          sumX2 += xv * xv;
+        }
+        const avX = Math.sqrt(sumX2 / 32);
+        for (let l = 0; l < 32; ++l) {
+          weights[l] = avX + Math.abs(x[32 * j + l]);
+        }
+        const theMin = { value: 0 };
+        scales[j] = makeQkx2Quants(
+          32, 15,
+          x.subarray(32 * j, 32 * j + 32),
+          weights, L.subarray(32 * j, 32 * j + 32), theMin, Laux,
+          -1.0, 0.1, 20, false
+        );
+        mins[j] = theMin.value;
+        if (scales[j] > maxScale) maxScale = scales[j];
+        if (mins[j] > maxMin) maxMin = mins[j];
+      }
+
+      const invScale = maxScale > 0 ? 63 / maxScale : 0;
+      const invMin = maxMin > 0 ? 63 / maxMin : 0;
+      for (let j = 0; j < QK_K / 32; ++j) {
+        let ls = Math.min(63, nearestInt(invScale * scales[j]));
+        let lm = Math.min(63, nearestInt(invMin * mins[j]));
+        if (j < 4) {
+          packedScales[j] = ls;
+          packedScales[j + 4] = lm;
+        } else {
+          packedScales[j + 4] = (ls & 0x0f) | ((lm & 0x0f) << 4);
+          packedScales[j - 4] |= (ls >> 4) << 6;
+          packedScales[j - 0] |= (lm >> 4) << 6;
+        }
+      }
+
+      view.setUint16(blockBase + 0, float32ToF16Bits(maxScale / 63), true);
+      view.setUint16(blockBase + 2, float32ToF16Bits(maxMin / 63), true);
+      for (let i = 0; i < 12; ++i) {
+        view.setUint8(blockBase + 4 + i, packedScales[i]);
+      }
+
+      const d = maxScale / 63;
+      const dmin = maxMin / 63;
+      for (let j = 0; j < QK_K / 32; ++j) {
+        const [sc, m] = getScaleMinK4(j, packedScales);
+        const dj = d * sc;
+        if (!dj) continue;
+        const dm = dmin * m;
+        for (let ii = 0; ii < 32; ++ii) {
+          let l = nearestInt((x[32 * j + ii] + dm) / dj);
+          l = Math.max(0, Math.min(15, l));
+          L[32 * j + ii] = l;
+        }
+      }
+
+      let qOffset = blockBase + 16;
+      for (let j = 0; j < QK_K; j += 64) {
+        for (let l = 0; l < 32; ++l) {
+          view.setUint8(qOffset + l, L[j + l] | (L[j + l + 32] << 4));
+        }
+        qOffset += 32;
+      }
+    }
+
+    function makeRandomRows(count, elemsPerRow, seed) {
+      const rows = new Array(count);
+      let s = seed >>> 0;
+      for (let r = 0; r < count; ++r) {
+        const row = new Float32Array(elemsPerRow);
+        for (let i = 0; i < elemsPerRow; ++i) {
+          [s, row[i]] = rngFloatSigned((s + i + r) >>> 0);
+        }
+        rows[r] = row;
+      }
+      return rows;
+    }
+
+    function makeQ4KDataFromRandomF32() {
+      const buffer = new ArrayBuffer(M * BLOCKS_PER_ROW * BLOCK_BYTES);
+      const view = new DataView(buffer);
+      const rows = makeRandomRows(M, K, 0xdecafbad);
+
+      for (let row = 0; row < M; ++row) {
+        const rowData = rows[row];
+        const rowBase = row * BLOCKS_PER_ROW * BLOCK_BYTES;
+        for (let block = 0; block < BLOCKS_PER_ROW; ++block) {
+          const blockBase = rowBase + block * BLOCK_BYTES;
+          quantizeQ4KBlock(rowData.subarray(block * QK_K, (block + 1) * QK_K), view, blockBase);
+        }
+      }
+
+      return new Uint32Array(buffer);
+    }
+
+    function makeSrc1Data() {
+      const data = new Float32Array(K * N);
+      let s = 0x12345678;
+      for (let i = 0; i < data.length; i++) {
+        [s, data[i]] = rngFloatSigned((s + i) >>> 0);
+      }
+      return data;
+    }
+
+    async function run() {
+      logEl.textContent = "Running...";
+      if (!navigator.gpu) {
+        logEl.textContent = "WebGPU unavailable.";
+        return;
+      }
+
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) {
+        logEl.textContent = "No WebGPU adapter.";
+        return;
+      }
+
+      const requiredFeatures = [];
+      if (adapter.features.has("shader-f16")) {
+        requiredFeatures.push("shader-f16");
+      }
+      const device = await adapter.requestDevice({ requiredFeatures });
+      device.addEventListener?.("uncapturederror", (event) => {
+        console.error(event.error);
+      });
+
+      const input = makeQ4KDataFromRandomF32();
+      const outElems = M * N;
+      const src1Data = makeSrc1Data();
+      const paramsWords = new Uint32Array([
+        0, 0, 0,
+        M, N, K,
+        BLOCKS_PER_ROW, K,
+        BLOCKS_PER_ROW * BLOCK_BYTES, K * N,
+        BLOCKS_PER_ROW * BLOCK_BYTES, K * N,
+        1, 1, 1, 1,
+      ]);
+      const inBuf = device.createBuffer({
+        size: input.byteLength,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      device.queue.writeBuffer(inBuf, 0, input);
+      const src1Buf = device.createBuffer({
+        size: src1Data.byteLength,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+      });
+      device.queue.writeBuffer(src1Buf, 0, src1Data);
+
+      const outBuf = device.createBuffer({
+        size: outElems * 4,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+      });
+      const paramsBuf = device.createBuffer({
+        size: paramsWords.byteLength,
+        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+      });
+      device.queue.writeBuffer(paramsBuf, 0, paramsWords);
+      const readBuf = device.createBuffer({
+        size: outElems * 4,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+      });
+      device.pushErrorScope("validation");
+      device.pushErrorScope("internal");
+      const shader = await fetch(shaderUrl).then((r) => r.text());
+      const module = device.createShaderModule({ code: shader });
+      const info = await module.getCompilationInfo();
+      const compilationMessages = info.messages || [];
+      const pipeline = device.createComputePipeline({
+        layout: "auto",
+        compute: { module, entryPoint: "main" },
+      });
+
+      const bindGroup = device.createBindGroup({
+        layout: pipeline.getBindGroupLayout(0),
+        entries: [
+          { binding: 0, resource: { buffer: inBuf } },
+          { binding: 1, resource: { buffer: src1Buf } },
+          { binding: 2, resource: { buffer: outBuf } },
+          { binding: 3, resource: { buffer: paramsBuf } },
+        ],
+      });
+
+      const encoder = device.createCommandEncoder();
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bindGroup);
+      pass.dispatchWorkgroups(24, 1, 1);
+      pass.end();
+      encoder.copyBufferToBuffer(outBuf, 0, readBuf, 0, outElems * 4);
+      device.queue.submit([encoder.finish()]);
+      const internalError = await device.popErrorScope();
+      const validationError = await device.popErrorScope();
+
+      await readBuf.mapAsync(GPUMapMode.READ);
+      const result = new Float32Array(readBuf.getMappedRange().slice(0));
+      readBuf.unmap();
+
+      const lines = [
+        `adapter: ${adapter.info?.vendor || "unknown"} / ${adapter.info?.architecture || "unknown"} / ${adapter.info?.description || "unknown"}`,
+        `shader-f16 requested: ${requiredFeatures.includes("shader-f16") ? "yes" : "no"}`,
+        "data source: q4_K-packed random rows",
+        `shader source: ${shaderUrl}`,
+        "",
+        "selected input words:",
+      ];
+
+      const interestingInputIdx = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+      for (const i of interestingInputIdx) {
+        lines.push(`  src0[${i}] = ${hex32(input[i])} (${input[i]})`);
+      }
+
+      lines.push("");
+      lines.push(`derived block_byte_base = 0, src0_idx = 0, stride_01 = ${paramsWords[6]}`);
+      if (compilationMessages.length > 0) {
+        lines.push("");
+        lines.push("compilation messages:");
+        for (const msg of compilationMessages) {
+          lines.push(`  ${msg.type}: ${msg.message}`);
+        }
+      }
+      if (internalError || validationError) {
+        lines.push("");
+        lines.push("device errors:");
+        if (internalError) {
+          lines.push(`  internal: ${internalError.message}`);
+        }
+        if (validationError) {
+          lines.push(`  validation: ${validationError.message}`);
+        }
+      }
+      lines.push("");
+      lines.push("first output floats:");
+      for (let i = 0; i < 16; i++) {
+        lines.push(`  dst[${i}] = ${result[i]}`);
+      }
+
+      logEl.textContent = lines.join("\n");
+    }
+
+    runBtn.addEventListener("click", () => {
+      run().catch((err) => {
+        console.error(err);
+        logEl.textContent = String(err?.stack || err);
+      });
+    });
+  </script>
+</body>
+</html>

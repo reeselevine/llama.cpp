@@ -1346,6 +1346,10 @@ static webgpu_encoded_op ggml_webgpu_mul_mat(webgpu_context &       ctx,
             break;
     }
 
+    if (!is_vec) {
+      //use_fast = false;
+    }
+
     ggml_webgpu_shader_lib_context shader_lib_ctx = {
         .src0                     = src0,
         .src1                     = src1,
@@ -3461,7 +3465,7 @@ static bool create_webgpu_device(ggml_backend_webgpu_reg_context * ctx) {
             }
         }
     }
-    ctx->webgpu_global_ctx->capabilities.supports_subgroup_matrix = valid_subgroup_matrix_config;
+    //ctx->webgpu_global_ctx->capabilities.supports_subgroup_matrix = valid_subgroup_matrix_config;
 #endif
 
     // For subgroup matrix code to be the most efficient, we would like the subgroup size to be consistent and accurate.
@@ -3499,20 +3503,25 @@ static bool create_webgpu_device(ggml_backend_webgpu_reg_context * ctx) {
     dev_desc.SetUncapturedErrorCallback(
         [](const wgpu::Device & device, wgpu::ErrorType reason, wgpu::StringView message) {
             GGML_UNUSED(device);
+#ifdef __EMSCRIPTEN__
+            GGML_LOG_ERROR("ggml_webgpu: Device error! Reason: %d, Message: %s\n", static_cast<int>(reason),
+                           std::string(message).c_str());
+#else
             GGML_ABORT("ggml_webgpu: Device error! Reason: %d, Message: %s\n", static_cast<int>(reason),
                        std::string(message).c_str());
+#endif
         });
 
 #ifndef __EMSCRIPTEN__
     // Enable Dawn-specific toggles to increase native performance
     // TODO: Maybe WebGPU needs a "fast" mode where you can request compilers skip adding checks like these,
     //       only for native performance?
-    const char * const deviceEnabledToggles[]  = { "skip_validation", "disable_robustness", "disable_workgroup_init",
+    const char * const deviceEnabledToggles[]  = { "disable_robustness", "disable_workgroup_init",
                                                    "disable_polyfills_on_integer_div_and_mod" };
     const char * const deviceDisabledToggles[] = { "timestamp_quantization" };
     wgpu::DawnTogglesDescriptor deviceTogglesDesc;
     deviceTogglesDesc.enabledToggles      = deviceEnabledToggles;
-    deviceTogglesDesc.enabledToggleCount  = 4;
+    deviceTogglesDesc.enabledToggleCount  = 3;
     deviceTogglesDesc.disabledToggles     = deviceDisabledToggles;
     deviceTogglesDesc.disabledToggleCount = 1;
 

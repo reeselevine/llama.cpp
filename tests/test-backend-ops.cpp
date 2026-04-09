@@ -49,6 +49,8 @@
 #   define N_THREADS std::thread::hardware_concurrency()
 #endif
 
+static void print_tensor_sample(const char * label, const std::vector<float> & values, size_t max_count = 8);
+
 static void init_tensor_uniform(ggml_tensor * tensor, float min = -1.0f, float max = 1.0f) {
     size_t nels = ggml_nelements(tensor);
     std::vector<float> data(nels);
@@ -1148,6 +1150,11 @@ struct test_case {
         return nmse(a, b, n);
     }
 
+    virtual bool report_nmse(ggml_tensor * t) {
+        GGML_UNUSED(t);
+        return false;
+    }
+
     virtual float grad_eps() {
         return 1e-1f;
     }
@@ -1393,6 +1400,8 @@ struct test_case {
                 // check for nans
                 if (std::isnan(f1[i]) || std::isnan(f2[i])) {
                     printf("[%s] NaN at index %zu (%s=%f %s=%f) ", ggml_op_desc(t1), i, bn1, f1[i], bn2, f2[i]);
+                    print_tensor_sample(bn1, f1);
+                    print_tensor_sample(bn2, f2);
                     ud->ok = false;
                     return true;
                 }
@@ -1401,11 +1410,15 @@ struct test_case {
                     if (isinf_or_max(f1[i]) && isinf_or_max(f2[i])) {
                         if (std::signbit(f1[i]) != std::signbit(f2[i])) {
                             printf("[%s] inf sign mismatch: %s=%f %s=%f ", ggml_op_desc(t1), bn1, f1[i], bn2, f2[i]);
+                            print_tensor_sample(bn1, f1);
+                            print_tensor_sample(bn2, f2);
                             ud->ok = false;
                             return true;
                         }
                     } else {
                         printf("[%s] inf mismatch: %s=%f %s=%f ", ggml_op_desc(t1), bn1, f1[i], bn2, f2[i]);
+                        print_tensor_sample(bn1, f1);
+                        print_tensor_sample(bn2, f2);
                         ud->ok = false;
                         return true;
                     }
@@ -1413,8 +1426,13 @@ struct test_case {
             }
 
             double err = ud->tc->err(f1.data(), f2.data(), f1.size());
+            if (ud->tc->report_nmse(t1)) {
+                printf("[%s] NMSE = %.9f (%s vs %s) ", ggml_op_desc(t1), err, bn1, bn2);
+            }
             if (err > ud->tc->max_err(ud->backend1)) {
                 printf("[%s] ERR = %.9f > %.9f ", ggml_op_desc(t1), err, ud->tc->max_err(ud->backend1));
+                print_tensor_sample(bn1, f1);
+                print_tensor_sample(bn2, f2);
                 //for (int i = 0; i < (int) f1.size(); i++) {
                 //    printf("%5d %9.6f %9.6f, diff = %9.6f\n", i, f1[i], f2[i], f1[i] - f2[i]);
                 //}
@@ -2746,6 +2764,41 @@ struct test_repeat_back : public test_case {
     }
 };
 
+static void filter_debug_webgpu_mul_mat_cases(std::vector<std::unique_ptr<test_case>> & test_cases) {
+    static const bool enabled = true;
+    if (!enabled) {
+        return;
+    }
+
+    auto keep_case = [](const std::unique_ptr<test_case> & tc) {
+        const std::string vars = tc->vars();
+        return vars == "type_a=q4_K,type_b=f32,m=1536,n=1,k=1536,bs=[1,1],nr=[1,1],per=[0,1,2,3],k_v=0,o=1" ||
+               vars == "type_a=q4_K,type_b=f32,m=1536,n=32,k=1536,bs=[1,1],nr=[1,1],per=[0,1,2,3],k_v=0,o=1";
+    };
+
+    test_cases.erase(
+        std::remove_if(test_cases.begin(), test_cases.end(), [&](const std::unique_ptr<test_case> & tc) {
+            return !keep_case(tc);
+        }),
+        test_cases.end()
+    );
+}
+
+static void print_tensor_sample(const char * label, const std::vector<float> & values, size_t max_count) {
+    printf("%s[", label);
+    const size_t count = std::min(values.size(), max_count);
+    for (size_t i = 0; i < count; ++i) {
+        if (i != 0) {
+            printf(", ");
+        }
+        printf("%g", values[i]);
+    }
+    if (values.size() > count) {
+        printf(", ...");
+    }
+    printf("] ");
+}
+
 // GGML_OP_DUP
 struct test_dup : public test_case {
     const ggml_type type;
@@ -3754,6 +3807,7 @@ struct test_mul_mat : public test_case {
     const std::array<int64_t, 4> per; // permutation of dimensions
     const int64_t k_v; // size of k in memory, resulting in a non-contiguous view for k_v > k, no view for k_v == 0
     const uint32_t o; // number of outputs
+    const bool report_nmse_value;
 
     std::string vars() override {
         return VARS_TO_STR10(type_a, type_b, m, n, k, bs, nr, per, k_v, o);
@@ -3785,8 +3839,9 @@ struct test_mul_mat : public test_case {
             std::array<int64_t, 2> bs = {10, 10},
             std::array<int64_t, 2> nr = {2, 2},
             std::array<int64_t, 4> per = {0, 1, 2, 3},
-            int64_t k_v = 0, uint32_t o = 1)
-        : type_a(type_a), type_b(type_b), m(m), n(n), k(k), bs(bs), nr(nr), per(per), k_v(k_v), o(o) {}
+            int64_t k_v = 0, uint32_t o = 1, bool report_nmse_value = false)
+        : type_a(type_a), type_b(type_b), m(m), n(n), k(k), bs(bs), nr(nr), per(per), k_v(k_v), o(o),
+          report_nmse_value(report_nmse_value) {}
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
         // C^T = A * B^T: (k, m) * (k, n) => (m, n)
@@ -3852,6 +3907,10 @@ struct test_mul_mat : public test_case {
     }
 
     bool run_whole_graph() override { return o > 1; }
+
+    bool report_nmse(ggml_tensor * t) override {
+        return report_nmse_value && t->op == GGML_OP_MUL_MAT;
+    }
 
     std::string op_desc(ggml_tensor * t) override {
         GGML_UNUSED(t);
@@ -7952,6 +8011,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q8_0, GGML_TYPE_F32, 8192, 512, 5120, {128, 1}, {1, 1}));
 #endif
 
+    test_cases.emplace_back(
+        new test_mul_mat(GGML_TYPE_Q4_K, GGML_TYPE_F32, 1536, 32, 1536, {1, 1}, {1, 1}, {0, 1, 2, 3}, 0, 1, true));
+    test_cases.emplace_back(
+        new test_mul_mat(GGML_TYPE_Q6_K, GGML_TYPE_F32, 1536, 32, 1536, {1, 1}, {1, 1}, {0, 1, 2, 3}, 0, 1, true));
+
     for (ggml_type type_a : all_types) {
         for (int i = 1; i < 10; ++i) {
             test_cases.emplace_back(new test_mul_mat(type_a,    GGML_TYPE_F32, 16,  i, 256, { 1,  1}, {1, 1}));
@@ -9062,6 +9126,7 @@ static bool test_backend(ggml_backend_t backend, test_mode mode, const char * op
         test_cases = make_test_cases_from_file(test_file_path);
     }
 
+    filter_debug_webgpu_mul_mat_cases(test_cases);
     filter_test_cases(test_cases, params_filter);
 
     if (mode == MODE_TEST) {
