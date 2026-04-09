@@ -65,276 +65,36 @@
     const runBtn = document.getElementById("run");
 
     const shaderPath = "./mul_mat_reg_tile_q4_K_f32_exact.wgsl";
+<<<<<<< HEAD
     const shaderUrl = `${shaderPath}?v=failing-debug-sc-direct-1`;
+=======
+    const shaderUrl = `${shaderPath}?v=k96-iter-debug-1`;
+>>>>>>> 298efbecf (As minimized as I can get it)
 
     function hex32(v) {
       return "0x" + v.toString(16).padStart(8, "0");
     }
 
-    const QK_K = 256;
-    const BLOCK_BYTES = 144;
-    const BLOCKS_PER_ROW = 6;
-    const M = 1536;
-    const N = 32;
-    const K = 1536;
+    const OUT_FLOATS = 5;
+    const DEBUG_EXPECTED = new Uint32Array([
+      0xdeadbeef,
+      1,
+      2,
+      3,
+    ]);
+    const DEBUG_LABELS = [
+      "sentinel",
+      "sc after k_outer = 0",
+      "sc after k_outer = 32",
+      "sc after k_outer = 64",
+    ];
 
-    function xorshift32(state) {
-      let x = state >>> 0;
-      x ^= (x << 13) >>> 0;
-      x ^= x >>> 17;
-      x ^= (x << 5) >>> 0;
-      return x >>> 0;
-    }
-
-    function rngFloatSigned(state) {
-      const next = xorshift32(state);
-      return [next, ((next / 0xffffffff) * 2.0) - 1.0];
-    }
-
-    function nearestInt(x) {
-      return x < 0 ? -Math.round(-x) : Math.round(x);
-    }
-
-    function float32ToF16Bits(val) {
-      const f32 = new Float32Array(1);
-      const u32 = new Uint32Array(f32.buffer);
-      f32[0] = val;
-      const x = u32[0];
-
-      const sign = (x >>> 16) & 0x8000;
-      let mantissa = x & 0x007fffff;
-      let exp = (x >>> 23) & 0xff;
-
-      if (exp === 0xff) {
-        if (mantissa !== 0) return sign | 0x7e00;
-        return sign | 0x7c00;
-      }
-
-      if (exp === 0) {
-        return sign;
-      }
-
-      exp = exp - 127 + 15;
-      if (exp >= 0x1f) {
-        return sign | 0x7c00;
-      }
-      if (exp <= 0) {
-        if (exp < -10) {
-          return sign;
-        }
-        mantissa = (mantissa | 0x00800000) >>> (1 - exp);
-        return sign | ((mantissa + 0x00001000) >>> 13);
-      }
-      return sign | (exp << 10) | ((mantissa + 0x00001000) >>> 13);
-    }
-
-    function makeQkx2Quants(n, nmax, x, weights, L, theMin, Laux, rmin, rdelta, nstep, useMad) {
-      let min = x[0];
-      let max = x[0];
-      let sumW = weights[0];
-      let sumX = sumW * x[0];
-
-      for (let i = 1; i < n; ++i) {
-        if (x[i] < min) min = x[i];
-        if (x[i] > max) max = x[i];
-        const w = weights[i];
-        sumW += w;
-        sumX += w * x[i];
-      }
-
-      if (min > 0) min = 0;
-      if (max === min) {
-        for (let i = 0; i < n; ++i) L[i] = 0;
-        theMin.value = -min;
-        return 0;
-      }
-
-      let iscale = nmax / (max - min);
-      let scale = 1 / iscale;
-      let bestError = 0;
-
-      for (let i = 0; i < n; ++i) {
-        let l = nearestInt(iscale * (x[i] - min));
-        l = Math.max(0, Math.min(nmax, l));
-        L[i] = l;
-        let diff = scale * L[i] + min - x[i];
-        diff = useMad ? Math.abs(diff) : diff * diff;
-        bestError += weights[i] * diff;
-      }
-
-      if (nstep < 1) {
-        theMin.value = -min;
-        return scale;
-      }
-
-      for (let is = 0; is <= nstep; ++is) {
-        iscale = (rmin + rdelta * is + nmax) / (max - min);
-        let sumL = 0;
-        let sumL2 = 0;
-        let sumXL = 0;
-        for (let i = 0; i < n; ++i) {
-          let l = nearestInt(iscale * (x[i] - min));
-          l = Math.max(0, Math.min(nmax, l));
-          Laux[i] = l;
-          const w = weights[i];
-          sumL += w * l;
-          sumL2 += w * l * l;
-          sumXL += w * l * x[i];
-        }
-
-        const D = sumW * sumL2 - sumL * sumL;
-        if (D <= 0) continue;
-
-        let thisScale = (sumW * sumXL - sumX * sumL) / D;
-        let thisMin = (sumL2 * sumX - sumL * sumXL) / D;
-        if (thisMin > 0) {
-          thisMin = 0;
-          thisScale = sumXL / sumL2;
-        }
-
-        let curError = 0;
-        for (let i = 0; i < n; ++i) {
-          let diff = thisScale * Laux[i] + thisMin - x[i];
-          diff = useMad ? Math.abs(diff) : diff * diff;
-          curError += weights[i] * diff;
-        }
-
-        if (curError < bestError) {
-          for (let i = 0; i < n; ++i) L[i] = Laux[i];
-          bestError = curError;
-          scale = thisScale;
-          min = thisMin;
-        }
-      }
-
-      theMin.value = -min;
-      return scale;
-    }
-
-    function getScaleMinK4(j, q) {
-      if (j < 4) {
-        return [q[j] & 63, q[j + 4] & 63];
-      }
-      return [
-        (q[j + 4] & 0x0f) | ((q[j - 4] >> 6) << 4),
-        (q[j + 4] >> 4) | ((q[j - 0] >> 6) << 4),
-      ];
-    }
-
-    function quantizeQ4KBlock(x, view, blockBase) {
-      const L = new Uint8Array(QK_K);
-      const Laux = new Uint8Array(32);
-      const weights = new Float32Array(32);
-      const mins = new Float32Array(QK_K / 32);
-      const scales = new Float32Array(QK_K / 32);
-      const packedScales = new Uint8Array(12);
-
-      let maxScale = 0;
-      let maxMin = 0;
-
-      for (let j = 0; j < QK_K / 32; ++j) {
-        let sumX2 = 0;
-        for (let l = 0; l < 32; ++l) {
-          const xv = x[32 * j + l];
-          sumX2 += xv * xv;
-        }
-        const avX = Math.sqrt(sumX2 / 32);
-        for (let l = 0; l < 32; ++l) {
-          weights[l] = avX + Math.abs(x[32 * j + l]);
-        }
-        const theMin = { value: 0 };
-        scales[j] = makeQkx2Quants(
-          32, 15,
-          x.subarray(32 * j, 32 * j + 32),
-          weights, L.subarray(32 * j, 32 * j + 32), theMin, Laux,
-          -1.0, 0.1, 20, false
-        );
-        mins[j] = theMin.value;
-        if (scales[j] > maxScale) maxScale = scales[j];
-        if (mins[j] > maxMin) maxMin = mins[j];
-      }
-
-      const invScale = maxScale > 0 ? 63 / maxScale : 0;
-      const invMin = maxMin > 0 ? 63 / maxMin : 0;
-      for (let j = 0; j < QK_K / 32; ++j) {
-        let ls = Math.min(63, nearestInt(invScale * scales[j]));
-        let lm = Math.min(63, nearestInt(invMin * mins[j]));
-        if (j < 4) {
-          packedScales[j] = ls;
-          packedScales[j + 4] = lm;
-        } else {
-          packedScales[j + 4] = (ls & 0x0f) | ((lm & 0x0f) << 4);
-          packedScales[j - 4] |= (ls >> 4) << 6;
-          packedScales[j - 0] |= (lm >> 4) << 6;
-        }
-      }
-
-      view.setUint16(blockBase + 0, float32ToF16Bits(maxScale / 63), true);
-      view.setUint16(blockBase + 2, float32ToF16Bits(maxMin / 63), true);
-      for (let i = 0; i < 12; ++i) {
-        view.setUint8(blockBase + 4 + i, packedScales[i]);
-      }
-
-      const d = maxScale / 63;
-      const dmin = maxMin / 63;
-      for (let j = 0; j < QK_K / 32; ++j) {
-        const [sc, m] = getScaleMinK4(j, packedScales);
-        const dj = d * sc;
-        if (!dj) continue;
-        const dm = dmin * m;
-        for (let ii = 0; ii < 32; ++ii) {
-          let l = nearestInt((x[32 * j + ii] + dm) / dj);
-          l = Math.max(0, Math.min(15, l));
-          L[32 * j + ii] = l;
-        }
-      }
-
-      let qOffset = blockBase + 16;
-      for (let j = 0; j < QK_K; j += 64) {
-        for (let l = 0; l < 32; ++l) {
-          view.setUint8(qOffset + l, L[j + l] | (L[j + l + 32] << 4));
-        }
-        qOffset += 32;
-      }
-    }
-
-    function makeRandomRows(count, elemsPerRow, seed) {
-      const rows = new Array(count);
-      let s = seed >>> 0;
-      for (let r = 0; r < count; ++r) {
-        const row = new Float32Array(elemsPerRow);
-        for (let i = 0; i < elemsPerRow; ++i) {
-          [s, row[i]] = rngFloatSigned((s + i + r) >>> 0);
-        }
-        rows[r] = row;
-      }
-      return rows;
-    }
-
-    function makeQ4KDataFromRandomF32() {
-      const buffer = new ArrayBuffer(M * BLOCKS_PER_ROW * BLOCK_BYTES);
-      const view = new DataView(buffer);
-      const rows = makeRandomRows(M, K, 0xdecafbad);
-
-      for (let row = 0; row < M; ++row) {
-        const rowData = rows[row];
-        const rowBase = row * BLOCKS_PER_ROW * BLOCK_BYTES;
-        for (let block = 0; block < BLOCKS_PER_ROW; ++block) {
-          const blockBase = rowBase + block * BLOCK_BYTES;
-          quantizeQ4KBlock(rowData.subarray(block * QK_K, (block + 1) * QK_K), view, blockBase);
-        }
-      }
-
-      return new Uint32Array(buffer);
-    }
-
-    function makeSrc1Data() {
-      const data = new Float32Array(K * N);
-      let s = 0x12345678;
-      for (let i = 0; i < data.length; i++) {
-        [s, data[i]] = rngFloatSigned((s + i) >>> 0);
-      }
-      return data;
+    function makeScaleValsInput() {
+      return new Uint32Array([
+        0x04030201,
+        0x08070605,
+        0x0c0b0a09,
+      ]);
     }
 
     async function run() {
@@ -359,45 +119,21 @@
         console.error(event.error);
       });
 
-      const input = makeQ4KDataFromRandomF32();
-      const outElems = M * N;
-      const src1Data = makeSrc1Data();
-      const paramsWords = new Uint32Array([
-        0, 0, 0,
-        M, N, K,
-        BLOCKS_PER_ROW, K,
-        BLOCKS_PER_ROW * BLOCK_BYTES, K * N,
-        BLOCKS_PER_ROW * BLOCK_BYTES, K * N,
-        1, 1, 1, 1,
-      ]);
+      const input = makeScaleValsInput();
       const inBuf = device.createBuffer({
         size: input.byteLength,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
       });
       device.queue.writeBuffer(inBuf, 0, input);
-      const src1Buf = device.createBuffer({
-        size: src1Data.byteLength,
-        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-      });
-      device.queue.writeBuffer(src1Buf, 0, src1Data);
 
       const outBuf = device.createBuffer({
-        size: outElems * 4,
+        size: OUT_FLOATS * 4,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
       });
-      const debugWords = 8;
+      const debugWords = DEBUG_EXPECTED.length;
       const debugBuf = device.createBuffer({
         size: debugWords * 4,
         usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
-      });
-      const paramsBuf = device.createBuffer({
-        size: paramsWords.byteLength,
-        usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-      });
-      device.queue.writeBuffer(paramsBuf, 0, paramsWords);
-      const readBuf = device.createBuffer({
-        size: outElems * 4,
-        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
       });
       const debugReadBuf = device.createBuffer({
         size: debugWords * 4,
@@ -418,10 +154,8 @@
         layout: pipeline.getBindGroupLayout(0),
         entries: [
           { binding: 0, resource: { buffer: inBuf } },
-          { binding: 1, resource: { buffer: src1Buf } },
-          { binding: 2, resource: { buffer: outBuf } },
-          { binding: 3, resource: { buffer: paramsBuf } },
-          { binding: 4, resource: { buffer: debugBuf } },
+          { binding: 1, resource: { buffer: outBuf } },
+          { binding: 2, resource: { buffer: debugBuf } },
         ],
       });
 
@@ -429,17 +163,13 @@
       const pass = encoder.beginComputePass();
       pass.setPipeline(pipeline);
       pass.setBindGroup(0, bindGroup);
-      pass.dispatchWorkgroups(24, 1, 1);
+      pass.dispatchWorkgroups(1, 1, 1);
       pass.end();
-      encoder.copyBufferToBuffer(outBuf, 0, readBuf, 0, outElems * 4);
       encoder.copyBufferToBuffer(debugBuf, 0, debugReadBuf, 0, debugWords * 4);
       device.queue.submit([encoder.finish()]);
       const internalError = await device.popErrorScope();
       const validationError = await device.popErrorScope();
 
-      await readBuf.mapAsync(GPUMapMode.READ);
-      const result = new Float32Array(readBuf.getMappedRange().slice(0));
-      readBuf.unmap();
       await debugReadBuf.mapAsync(GPUMapMode.READ);
       const debugResult = new Uint32Array(debugReadBuf.getMappedRange().slice(0));
       debugReadBuf.unmap();
@@ -447,19 +177,10 @@
       const lines = [
         `adapter: ${adapter.info?.vendor || "unknown"} / ${adapter.info?.architecture || "unknown"} / ${adapter.info?.description || "unknown"}`,
         `shader-f16 requested: ${requiredFeatures.includes("shader-f16") ? "yes" : "no"}`,
-        "data source: q4_K-packed random rows",
+        "data source: 3 fixed u32 scale words",
         `shader source: ${shaderPath}`,
-        "",
-        "selected input words:",
       ];
 
-      const interestingInputIdx = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
-      for (const i of interestingInputIdx) {
-        lines.push(`  src0[${i}] = ${hex32(input[i])} (${input[i]})`);
-      }
-
-      lines.push("");
-      lines.push(`derived block_byte_base = 0, src0_idx = 0, stride_01 = ${paramsWords[6]}`);
       if (compilationMessages.length > 0) {
         lines.push("");
         lines.push("compilation messages:");
@@ -479,23 +200,22 @@
       }
       lines.push("");
       lines.push("debug words:");
-      lines.push("  [0] sentinel");
-      lines.push("  [1] src0[0]");
-      lines.push("  [2] load_src0_u16_at(0)");
-      lines.push("  [3] load_src0_u32_at(4)");
-      lines.push("  [4] shmem[0] bits after first stage");
-      lines.push("  [5] shmem[TILE_SRC0_SHMEM] bits after first stage");
-      lines.push("  [6] acc[0][0] bits");
-      lines.push("  [7] acc[0][1] bits");
-      for (let i = 0; i < debugResult.length; i++) {
-        lines.push(`  dbg[${i}] = ${hex32(debugResult[i])} (${debugResult[i]})`);
+      for (let i = 0; i < DEBUG_LABELS.length; i++) {
+        lines.push(`  [${i}] ${DEBUG_LABELS[i]}`);
       }
       lines.push("");
-      lines.push("first output floats:");
-      for (let i = 0; i < 16; i++) {
-        lines.push(`  dst[${i}] = ${result[i]}`);
+      lines.push("expected:");
+      for (let i = 0; i < DEBUG_EXPECTED.length; i++) {
+        const prefix = i >= 1 ? ">>" : "  ";
+        lines.push(`${prefix} dbg[${i}] = ${hex32(DEBUG_EXPECTED[i])} (${DEBUG_EXPECTED[i]})`);
       }
-
+      lines.push("");
+      lines.push("actual:");
+      for (let i = 0; i < debugResult.length; i++) {
+        const prefix = i >= 1 ? ">>" : "  ";
+        const status = debugResult[i] === DEBUG_EXPECTED[i] ? "ok" : "mismatch";
+        lines.push(`${prefix} dbg[${i}] = ${hex32(debugResult[i])} (${debugResult[i]}) [${status}]`);
+      }
       logEl.textContent = lines.join("\n");
     }
 
