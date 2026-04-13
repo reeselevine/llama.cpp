@@ -103,6 +103,17 @@ static std::optional<wgpu::Adapter> request_adapter(
     wgpu::RequestAdapterOptions adapter_options = {};
     adapter_options.backendType = backend_type;
 
+#ifndef __EMSCRIPTEN__
+    const char * const adapter_enabled_toggles[] = {
+        "vulkan_enable_f16_on_nvidia",
+        "use_vulkan_memory_model",
+    };
+    wgpu::DawnTogglesDescriptor adapter_toggles = {};
+    adapter_toggles.enabledToggles = adapter_enabled_toggles;
+    adapter_toggles.enabledToggleCount = 2;
+    adapter_options.nextInChain = &adapter_toggles;
+#endif
+
     check_wait_status(
         instance.WaitAny(
             instance.RequestAdapter(
