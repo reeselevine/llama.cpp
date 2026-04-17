@@ -97,7 +97,6 @@ jobs:
           ls -l /usr/share/vulkan/icd.d || true
 
       - name: Setup tmate
-        if: ${{ inputs.enable_tmate }}
         uses: mxschmitt/action-tmate@v3
 
       - name: Test
