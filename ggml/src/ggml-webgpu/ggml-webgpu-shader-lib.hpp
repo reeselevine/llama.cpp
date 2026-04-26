@@ -31,6 +31,7 @@
 #define WEBGPU_MUL_MAT_WG_SIZE_M 8
 #define WEBGPU_MUL_MAT_WG_SIZE_N 8
 #define WEBGPU_MUL_MAT_TILE_K    32
+#define WEBGPU_MUL_MAT_Q1_0_TILE_K 128
 
 // Subgroup matrix parameters
 // The number of subgroups in the M dimension
@@ -1530,7 +1531,12 @@ class ggml_webgpu_shader_lib {
         // Tiles
         defines.push_back("TILE_M=" + std::to_string(WEBGPU_MUL_MAT_TILE_M) + "u");
         defines.push_back("TILE_N=" + std::to_string(WEBGPU_MUL_MAT_TILE_N) + "u");
-        defines.push_back("TILE_K=" + std::to_string(WEBGPU_MUL_MAT_TILE_K) + "u");
+        // needs a different tile size due to a block size of 128
+        int tile_k = WEBGPU_MUL_MAT_TILE_K;
+        if (context.src0->type == GGML_TYPE_Q1_0) {
+            tile_k = 128;
+        }
+        defines.push_back("TILE_K=" + std::to_string(tile_k) + "u");
 
         // Subgroup matrix specifics
         if (key.use_subgroup_matrix) {
@@ -1556,9 +1562,8 @@ class ggml_webgpu_shader_lib {
         }
 
         auto processed = preprocessor.preprocess(shader_src, defines);
-
         auto decisions                 = std::make_shared<ggml_webgpu_mul_mat_shader_decisions>();
-        decisions->tile_k              = WEBGPU_MUL_MAT_TILE_K;
+        decisions->tile_k              = tile_k;
         decisions->tile_m              = WEBGPU_MUL_MAT_TILE_M;
         decisions->tile_n              = WEBGPU_MUL_MAT_TILE_N;
         decisions->use_subgroup_matrix = key.use_subgroup_matrix;
@@ -1627,6 +1632,7 @@ class ggml_webgpu_shader_lib {
                     std::transform(type_upper.begin(), type_upper.end(), type_upper.begin(), ::toupper);
 
                     switch (context.src0->type) {
+                        case GGML_TYPE_Q1_0:
                         case GGML_TYPE_Q4_0:
                         case GGML_TYPE_Q5_0:
                         case GGML_TYPE_Q8_0:
